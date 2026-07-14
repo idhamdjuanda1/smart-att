@@ -1,0 +1,7 @@
+[31mX [41;31m[[41;97mERROR[41;31m][0m [1mFound both a user configuration file at "wrangler.toml"[0m
+
+  and a deploy configuration file at "..\.wrangler\deploy\config.json".
+  But these do not share the same base path so it is not clear which should be used.
+
+
+🪵  Logs were written to "C:\Users\idmproject\AppData\Roaming\xdg.config\.wrangler\logs\wrangler-2026-07-13_10-43-09_874.log"

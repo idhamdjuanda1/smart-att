@@ -1,0 +1,196 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f4f7f9;
+  --foreground: #0f172a;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: "Inter", "Segoe UI", Arial, sans-serif;
+  --font-mono: "Cascadia Code", Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: "Inter", "Segoe UI", Arial, sans-serif;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+button, input, select, textarea { font: inherit; }
+button, label, select { -webkit-tap-highlight-color: transparent; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+
+::selection { background: #99f6e4; color: #134e4a; }
+
+.scrollbar-none { scrollbar-width: none; }
+.scrollbar-none::-webkit-scrollbar { display: none; }
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  min-width: 320px;
+  overflow-x: hidden;
+}
+
+.overflow-x-auto {
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.mobile-bottom-nav {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+.mobile-modal-panel {
+  overscroll-behavior-y: contain;
+}
+
+@media screen and (max-width: 1023px) {
+  html {
+    touch-action: pan-x pan-y;
+  }
+
+  html, body {
+    width: 100%;
+    max-width: 100%;
+    overflow-x: clip;
+  }
+
+  body > div,
+  main,
+  header,
+  section,
+  article,
+  form,
+  [role="dialog"] {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  img, video, canvas {
+    max-width: 100%;
+  }
+
+  pre, code {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .overflow-x-auto {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  input, select, textarea {
+    font-size: 16px !important;
+  }
+
+  .section-action > button,
+  .section-action > a,
+  .section-action > label {
+    display: flex;
+    width: 100%;
+    min-height: 44px;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .section-action > div {
+    display: grid;
+    width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.5rem;
+  }
+
+  .section-action > div > button,
+  .section-action > div > a,
+  .section-action > div > label {
+    display: flex;
+    width: 100%;
+    min-height: 44px;
+    align-items: center;
+    justify-content: center;
+    margin: 0;
+    text-align: center;
+  }
+}
+
+@media (max-width: 359px) {
+  .section-action > div {
+    grid-template-columns: 1fr;
+  }
+}
+@page {
+  size: A4 portrait;
+  margin: 0;
+}
+
+@media print {
+  html, body { width: 210mm; min-height: 297mm; margin: 0; background: white; }
+  body * { visibility: hidden; }
+  [role="dialog"], [role="dialog"] > div {
+    position: static !important;
+    width: auto !important;
+    max-width: none !important;
+    max-height: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+  .qr-print-root, .qr-print-root * { visibility: visible; }
+  .qr-print-root {
+    position: absolute !important;
+    inset: 0 auto auto 0 !important;
+    width: 210mm !important;
+    max-height: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    background: white !important;
+  }
+  .qr-print-page {
+    display: grid !important;
+    grid-template-columns: repeat(2, 85.6mm) !important;
+    grid-auto-rows: 54mm !important;
+    width: 210mm !important;
+    height: 297mm !important;
+    margin: 0 !important;
+    padding: 18mm 12mm !important;
+    align-content: start !important;
+    justify-content: center !important;
+    gap: 6mm 8mm !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: white !important;
+    break-after: page;
+    page-break-after: always;
+  }
+  .qr-print-page:last-child { break-after: auto; page-break-after: auto; }
+  .student-qr-card {
+    width: 85.6mm !important;
+    max-width: none !important;
+    height: 54mm !important;
+    aspect-ratio: auto !important;
+    margin: 0 !important;
+    flex: none !important;
+    border-radius: 2.5mm !important;
+    box-shadow: none !important;
+  }
+  .student-qr-code { width: 27mm !important; height: 27mm !important; }
+  .student-qr-logo { width: 9mm !important; height: 9mm !important; }
+}

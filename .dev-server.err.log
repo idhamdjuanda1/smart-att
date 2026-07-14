@@ -1,0 +1,25 @@
+[33mFiles in the public directory are served at the root path.
+Instead of [36m/public/quiz/demo[33m, use [36m/quiz/demo[33m.[39m
+file:///D:/project%20coding/SMART-ATT%20V2%20(absen%20siswa)/node_modules/vinext/dist/server/socket-error-backstop.js:114
+		throw err;
+		^
+
+Error: EBUSY: resource busy or locked, watch 'D:\project coding\SMART-ATT V2 (absen siswa)\.cloudflare-pages-deploy\public\logo.png'
+    at FSWatcher.<computed> (node:internal/fs/watchers:321:19)
+    at Object.watch (node:fs:2548:36)
+    at createFsWatchInstance (file:///D:/project%20coding/SMART-ATT%20V2%20(absen%20siswa)/node_modules/vite/dist/node/chunks/node.js:8497:16)
+    at setFsWatchListener (file:///D:/project%20coding/SMART-ATT%20V2%20(absen%20siswa)/node_modules/vite/dist/node/chunks/node.js:8539:14)
+    at NodeFsHandler._watchWithNodeFs (file:///D:/project%20coding/SMART-ATT%20V2%20(absen%20siswa)/node_modules/vite/dist/node/chunks/node.js:8653:20)
+    at NodeFsHandler._handleFile (file:///D:/project%20coding/SMART-ATT%20V2%20(absen%20siswa)/node_modules/vite/dist/node/chunks/node.js:8697:24)
+    at NodeFsHandler._addToNodeFs (file:///D:/project%20coding/SMART-ATT%20V2%20(absen%20siswa)/node_modules/vite/dist/node/chunks/node.js:8871:26)
+Emitted 'error' event on FSWatcher instance at:
+    at FSWatcher._handleError (file:///D:/project%20coding/SMART-ATT%20V2%20(absen%20siswa)/node_modules/vite/dist/node/chunks/node.js:9670:146)
+    at NodeFsHandler._addToNodeFs (file:///D:/project%20coding/SMART-ATT%20V2%20(absen%20siswa)/node_modules/vite/dist/node/chunks/node.js:8876:18) {
+  errno: -4082,
+  syscall: 'watch',
+  code: 'EBUSY',
+  path: 'D:\\project coding\\SMART-ATT V2 (absen siswa)\\.cloudflare-pages-deploy\\public\\logo.png',
+  filename: 'D:\\project coding\\SMART-ATT V2 (absen siswa)\\.cloudflare-pages-deploy\\public\\logo.png'
+}
+
+Node.js v24.18.0

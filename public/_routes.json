@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "include": ["/*"],
+  "exclude": [
+    "/assets/*",
+    "/_vinext_fonts/*",
+    "/logo.png",
+    "/favicon.svg",
+    "/file.svg",
+    "/globe.svg",
+    "/window.svg"
+  ]
+}

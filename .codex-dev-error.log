@@ -1,0 +1,49 @@
+[2m16.43.36[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22mReferenceError: ScoresView is not defined
+    at DashboardShell (http://localhost:3000/app/components/SmartAttApp.tsx?t=1783935815755:1951:52)
+    at Object.react_stack_bottom_frame (http://localhost:3000/node_modules/.vite/deps/react-dom_client.js?v=73e0e6e2:12868:12)
+    at renderWithHooks (http://localhost:3000/node_modules/.vite/deps/react-dom_client.js?v=73e0e6e2:4213:19)
+    at updateFunctionComponent (http://localhost:3000/node_modules/.vite/deps/react-dom_client.js?v=73e0e6e2:5569:16)
+    at beginWork (http://localhost:3000/node_modules/.vite/deps/react-dom_client.js?v=73e0e6e2:6140:20)
+    at runWithFiberInDEV (http://localhost:3000/node_modules/.vite/deps/react-dom_client.js?v=73e0e6e2:851:66)
+    at performUnitOfWork (http://localhost:3000/node_modules/.vite/deps/react-dom_client.js?v=73e0e6e2:8429:92)
+    at workLoopSync (http://localhost:3000/node_modules/.vite/deps/react-dom_client.js?v=73e0e6e2:8325:37)
+    at renderRootSync (http://localhost:3000/node_modules/.vite/deps/react-dom_client.js?v=73e0e6e2:8309:6)
+    at performWorkOnRoot (http://localhost:3000/node_modules/.vite/deps/react-dom_client.js?v=73e0e6e2:7994:27)
+[2m16.43.36[22m [31m[1m[vite][22m[39m [31m[2m(client)[22m[39m [2m[console.error] [22mThe above error occurred in a React component:
+
+    at DashboardShell (http://localhost:3000/app/components/SmartAttApp.tsx?t=1783935815755:1563:27)
+    at SmartAttApp (http://localhost:3000/app/components/SmartAttApp.tsx?t=1783935815755:830:19)
+    at CatchAllPage [Server] (<anonymous>)
+    at AwaitAppRenderDependencies [Server] (<anonymous>)
+    at Slot (http://localhost:3000/node_modules/vinext/dist/shims/slot.js?v=73e0e6e2:42:17)
+    at LayoutSegmentProvider (http://localhost:3000/node_modules/vinext/dist/shims/layout-segment-context.js?v=73e0e6e2:32:34)
+    at RedirectErrorBoundary (http://localhost:3000/node_modules/vinext/dist/shims/error-boundary.js?v=73e0e6e2:56:3)
+    at RedirectBoundary (http://localhost:3000/node_modules/vinext/dist/shims/error-boundary.js?v=73e0e6e2:86:29)
+    at Children (http://localhost:3000/node_modules/vinext/dist/shims/slot.js?v=73e0e6e2:64:17)
+    at body (<anonymous>)
+    at html (<anonymous>)
+    at RootLayout [Server] (<anonymous>)
+    at default (about://React/Server/D:/project%20coding/SMART-ATT%20V2%20(absen%20siswa)/app/layout.tsx?1:54:26)
+    at default (about://React/Server/D:/project%20coding/SMART-ATT%20V2%20(absen%20siswa)/app/layout.tsx?1:54:26)
+    at Slot (http://localhost:3000/node_modules/vinext/dist/shims/slot.js?v=73e0e6e2:42:17)
+    at LayoutSegmentProvider (http://localhost:3000/node_modules/vinext/dist/shims/layout-segment-context.js?v=73e0e6e2:32:34)
+    at Slot (http://localhost:3000/node_modules/vinext/dist/shims/slot.js?v=73e0e6e2:42:17)
+    at NavigationCommitSignal (http://localhost:3000/node_modules/vinext/dist/server/app-browser-navigation-controller.js?v=73e0e6e2:184:36)
+    at RedirectErrorBoundary (http://localhost:3000/node_modules/vinext/dist/shims/error-boundary.js?v=73e0e6e2:56:3)
+    at RedirectBoundary (http://localhost:3000/node_modules/vinext/dist/shims/error-boundary.js?v=73e0e6e2:86:29)
+    at DevRecoveryBoundary (http://localhost:3000/node_modules/vinext/dist/shims/error-boundary.js?v=73e0e6e2:268:3)
+    at BrowserRoot (http://localhost:3000/node_modules/vinext/dist/server/app-browser-entry.js?v=73e0e6e2:209:24)
+Detected multiple renderers concurrently rendering the same context provider. This is currently unsupported.
+Detected multiple renderers concurrently rendering the same context provider. This is currently unsupported.
+Detected multiple renderers concurrently rendering the same context provider. This is currently unsupported.
+Detected multiple renderers concurrently rendering the same context provider. This is currently unsupported.
+Detected multiple renderers concurrently rendering the same context provider. This is currently unsupported.
+Detected multiple renderers concurrently rendering the same context provider. This is currently unsupported.
+Detected multiple renderers concurrently rendering the same context provider. This is currently unsupported.
+Detected multiple renderers concurrently rendering the same context provider. This is currently unsupported.
+Detected multiple renderers concurrently rendering the same context provider. This is currently unsupported.
+Detected multiple renderers concurrently rendering the same context provider. This is currently unsupported.
+Detected multiple renderers concurrently rendering the same context provider. This is currently unsupported.
+Detected multiple renderers concurrently rendering the same context provider. This is currently unsupported.
+Detected multiple renderers concurrently rendering the same context provider. This is currently unsupported.
+Detected multiple renderers concurrently rendering the same context provider. This is currently unsupported.

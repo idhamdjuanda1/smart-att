@@ -1,0 +1,17 @@
+
+  vinext dev  (Vite 8.0.13)
+
+[2m10.57.08[22m [36m[1m[vite][22m[39m [34m[2m(ssr)[22m[39m Re-optimizing dependencies because lockfile has changed
+[2m10.57.08[22m [36m[1m[vite][22m[39m [34m[2m(rsc)[22m[39m Re-optimizing dependencies because lockfile has changed
+[2m10.57.09[22m [36m[1m[vite][22m[39m [34m[2m(rsc)[22m[39m [optimizer] scanning dependencies...
+[2m10.57.09[22m [36m[1m[vite][22m[39m [34m[2m(ssr)[22m[39m [optimizer] scanning dependencies...
+[2m10.57.12[22m [36m[1m[vite][22m[39m [34m[2m(ssr)[22m[39m [optimizer] bundling dependencies...
+[2m10.57.12[22m [36m[1m[vite][22m[39m [34m[2m(rsc)[22m[39m [optimizer] bundling dependencies...
+[2m10.57.19[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m Re-optimizing dependencies because lockfile has changed
+  [32m➜[39m  [1mLocal[22m:   [36mhttp://localhost:[1m3000[22m/[39m
+  [32m➜[39m  [1mDebug[22m:   [2m[33mhttp://localhost:[1m3000[22m[2m/__debug[39m[22m
+[2m10.57.20[22m [36m[1m[vite][22m[39m [90m[2m(client)[22m[39m [optimizer] bundling dependencies...
+ GET / 200 in 8.5s (compile: 1784001425.3s, render: 8.3s)
+ GET / 200 in 63ms (compile: 1784001425.2s, render: 41ms)
+ GET /public/quiz/demo 200 in 52ms (compile: 1784001425.2s, render: 35ms)
+ GET /superadmin 200 in 72ms (compile: 1784001425.2s, render: 42ms)
