@@ -1,6 +1,7 @@
 export type CsvStudent = {
   attendanceNumber: string;
   nis: string;
+  nisn: string;
   name: string;
   className: string;
   guardian: string;
@@ -89,36 +90,41 @@ export function parseStudentsCsv(text: string, defaultClassName = "VII A"): CsvP
 
   const headers = rows[0].map(normalizeHeader);
   const nisIndex = findColumn(headers, ["nis", "nomorinduksiswa", "nomorinduk"]);
+  const nisnIndex = findColumn(headers, ["nisn", "nomorinduksiswanasional", "nomorinduknasional"]);
   const attendanceNumberIndex = findColumn(headers, ["no", "nomor", "noabsen", "nomorabsen"]);
   const nameIndex = findColumn(headers, ["nama", "namasiswa", "namalengkap"]);
   const classIndex = findColumn(headers, ["kelas", "rombel", "classname"]);
   const guardianIndex = findColumn(headers, ["wali", "walimurid", "namawali", "namaorangtua", "namaorangtuawali"]);
   const phoneIndex = findColumn(headers, ["nowa", "nomorwa", "whatsapp", "nomorwhatsapp", "telepon", "hp"]);
 
-  if (nisIndex < 0 || nameIndex < 0) {
+  if (nisIndex < 0 || nisnIndex < 0 || nameIndex < 0) {
     return {
       students: [],
       skippedRows: rows.length - 1,
       delimiter,
-      error: "Header wajib NIS dan Nama Siswa tidak ditemukan.",
+      error: "Header wajib NIS, NISN, dan Nama Siswa tidak ditemukan.",
     };
   }
 
   const seenNis = new Set<string>();
+  const seenNisn = new Set<string>();
   const students: CsvStudent[] = [];
   let skippedRows = 0;
 
   for (const row of rows.slice(1)) {
     const nis = (row[nisIndex] ?? "").trim();
+    const nisn = (row[nisnIndex] ?? "").trim();
     const name = (row[nameIndex] ?? "").trim();
-    if (!nis || !name || seenNis.has(nis)) {
+    if (!nis || !nisn || !name || seenNis.has(nis) || seenNisn.has(nisn)) {
       skippedRows += 1;
       continue;
     }
     seenNis.add(nis);
+    seenNisn.add(nisn);
     students.push({
       attendanceNumber: (attendanceNumberIndex >= 0 ? row[attendanceNumberIndex] : "")?.trim() || String(students.length + 1),
       nis,
+      nisn,
       name,
       className: (classIndex >= 0 ? row[classIndex] : "")?.trim() || defaultClassName,
       guardian: (guardianIndex >= 0 ? row[guardianIndex] : "")?.trim() || "",

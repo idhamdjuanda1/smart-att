@@ -1,0 +1,16 @@
+[31mfailed to load config from D:\project coding\SMART-ATT V2 (absen siswa)\vite.config.ts[39m
+Error: spawn EPERM
+    at ChildProcess.spawn (node:internal/child_process:420:11)
+    at Object.spawn (node:child_process:786:9)
+    at ensureServiceIsRunning (D:\project coding\SMART-ATT V2 (absen siswa)\node_modules\wrangler\node_modules\esbuild\lib\main.js:1978:29)
+    at startSyncServiceWorker (D:\project coding\SMART-ATT V2 (absen siswa)\node_modules\wrangler\node_modules\esbuild\lib\main.js:2184:19)
+    at Object.<anonymous> (D:\project coding\SMART-ATT V2 (absen siswa)\node_modules\wrangler\node_modules\esbuild\lib\main.js:2225:3)
+    at Module._compile (node:internal/modules/cjs/loader:1688:14)
+    at Object..js (node:internal/modules/cjs/loader:1820:10)
+    at Module.load (node:internal/modules/cjs/loader:1423:32)
+    at Function._load (node:internal/modules/cjs/loader:1246:12)
+    at TracingChannel.traceSync (node:diagnostics_channel:322:14) {
+  errno: -4048,
+  code: 'EPERM',
+  syscall: 'spawn'
+}

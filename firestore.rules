@@ -73,6 +73,76 @@ service cloud.firestore {
         );
     }
 
+    match /studentDirectory/{directoryId} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create, update: if signedIn() && request.resource.data.ownerUid == request.auth.uid;
+      allow delete: if signedIn() && (resource.data.ownerUid == request.auth.uid || isSuperAdmin());
+    }
+
+    match /crossClassAttendance/{recordId} {
+      // The scanner checks whether the deterministic record already exists
+      // before creating it. A missing document has no resource.data, so allow
+      // that existence check while keeping existing records owner-protected.
+      allow get: if signedIn() &&
+        (!exists(/databases/$(database)/documents/crossClassAttendance/$(recordId)) ||
+         resource.data.ownerUid == request.auth.uid ||
+         resource.data.scannerUid == request.auth.uid ||
+         isSuperAdmin());
+      allow list: if false;
+      // Absensi hanya boleh tersimpan di sesi milik guru yang memiliki siswa.
+      // Jalur lintas guru dinonaktifkan; pemindahan siswa harus disetujui lebih dulu.
+      allow create: if false;
+      allow update: if false;
+      allow delete: if signedIn() && (resource.data.scannerUid == request.auth.uid || isSuperAdmin());
+    }
+
+    match /studentClassLinks/{linkId} {
+      allow read: if signedIn() &&
+        (resource.data.sourceOwnerUid == request.auth.uid ||
+         resource.data.targetOwnerUid == request.auth.uid ||
+         isSuperAdmin());
+      allow create: if signedIn() &&
+        request.resource.data.targetOwnerUid == request.auth.uid &&
+        request.resource.data.sourceOwnerUid is string &&
+        request.resource.data.sourceStudentId is string &&
+        request.resource.data.targetStudentId is string;
+      allow update, delete: if signedIn() &&
+        (resource.data.sourceOwnerUid == request.auth.uid ||
+         resource.data.targetOwnerUid == request.auth.uid ||
+         isSuperAdmin());
+    }
+    match /articles/{articleId} {
+      allow read: if resource.data.published == true || isSuperAdmin();
+      allow create, update, delete: if isSuperAdmin();
+    }
+
+    match /savingsTransactions/{transactionId} {
+      allow read: if signedIn() && (resource.data.ownerUid == request.auth.uid || isSuperAdmin());
+      allow create: if signedIn() &&
+        request.resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.studentId is string &&
+        request.resource.data.studentName is string &&
+        request.resource.data.nis is string &&
+        request.resource.data.type in ['deposit', 'withdrawal'] &&
+        request.resource.data.amount is number &&
+        request.resource.data.amount > 0 &&
+        request.resource.data.transactionDate is string &&
+        request.resource.data.officerName is string &&
+        request.resource.data.status == 'active' &&
+        request.resource.data.createdAtMs is number;
+      allow update: if signedIn() &&
+        resource.data.ownerUid == request.auth.uid &&
+        request.resource.data.ownerUid == resource.data.ownerUid &&
+        request.resource.data.studentId == resource.data.studentId &&
+        request.resource.data.amount == resource.data.amount &&
+        request.resource.data.type == resource.data.type &&
+        request.resource.data.status == 'void' &&
+        resource.data.status == 'active' &&
+        request.resource.data.voidReason is string &&
+        request.resource.data.voidReason.size() >= 3;
+      allow delete: if false;
+    }
     match /publicSnapshots/{snapshotId} {
       allow read: if resource.data.published == true;
       allow create: if signedIn() &&
@@ -88,7 +158,8 @@ service cloud.firestore {
       allow create: if
         request.resource.data.keys().hasOnly([
           'snapshotId', 'ownerUid', 'studentId', 'attendanceNumber', 'nis',
-          'studentName', 'className', 'guardian', 'phone', 'status', 'createdAt'
+          'studentName', 'className', 'guardian', 'phone', 'photoKey',
+          'photoThumbnailKey', 'photoAspect', 'status', 'createdAt'
         ]) &&
         request.resource.data.snapshotId is string &&
         request.resource.data.studentId is string &&
@@ -97,6 +168,12 @@ service cloud.firestore {
         request.resource.data.phone is string &&
         request.resource.data.phone.size() >= 10 &&
         request.resource.data.phone.size() <= 15 &&
+        (!request.resource.data.keys().hasAny(['photoKey', 'photoThumbnailKey', 'photoAspect']) ||
+          (request.resource.data.photoKey is string &&
+           request.resource.data.photoKey.matches('^guardian-submissions/' + request.resource.data.ownerUid + '/' + request.resource.data.studentId + '/photo-[A-Za-z0-9-]+\\.(jpg|png|webp)$') &&
+           request.resource.data.photoThumbnailKey is string &&
+           request.resource.data.photoThumbnailKey.matches('^guardian-submissions/' + request.resource.data.ownerUid + '/' + request.resource.data.studentId + '/thumbnail-[A-Za-z0-9-]+\\.(jpg|png|webp)$') &&
+           request.resource.data.photoAspect in ['3:4', '4:3'])) &&
         request.resource.data.status == 'pending' &&
         get(/databases/$(database)/documents/publicSnapshots/$(request.resource.data.snapshotId)).data.published == true &&
         get(/databases/$(database)/documents/publicSnapshots/$(request.resource.data.snapshotId)).data.type == 'guardian' &&

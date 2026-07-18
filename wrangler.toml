@@ -1,0 +1,8 @@
+name = "smart-att"
+compatibility_date = "2026-07-06"
+compatibility_flags = ["nodejs_compat"]
+pages_build_output_dir = ".pages-deploy"
+
+[[r2_buckets]]
+binding = "SMARTATT_R2"
+bucket_name = "smartatt-storage"

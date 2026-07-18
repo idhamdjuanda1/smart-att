@@ -7,11 +7,14 @@
   },
   "scripts": {
     "dev": "vinext dev",
-    "build": "vinext build",
+    "build": "node build/run-vinext-build.cjs",
+    "build:pages": "npm run build && node build/stage-cloudflare-pages.mjs",
     "start": "vinext start",
     "test": "npm run build && node --test tests/rendered-html.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "deploy:cloudflare": "npm run build:pages && wrangler pages deploy .pages-deploy --project-name smart-att",
+    "deploy:firestore": "firebase deploy --only firestore:rules"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",

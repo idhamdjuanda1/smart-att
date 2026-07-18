@@ -22,8 +22,11 @@ export function findStudentByQrOrNis<T extends AttendanceLookupStudent>(students
       qrNis = qr.nis == null ? "" : String(qr.nis).trim();
     }
   } catch {
-    // Input non-JSON adalah NIS manual biasa.
+    // Input non-JSON dapat berupa Student ID dari QR baru atau NIS manual biasa.
   }
+
+  const directStudent = students.find((student) => student.id === (qrStudentId || input));
+  if (directStudent) return directStudent;
 
   const expectedNis = canonicalNis(qrNis || input);
   return students.find((student) =>

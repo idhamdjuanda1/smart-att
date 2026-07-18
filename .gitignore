@@ -1,6 +1,9 @@
 node_modules/
 dist/
 .next/
+.firebase/
+.pages-deploy/
+.pages-inspect/
 .env
 .env.*
 .wrangler/

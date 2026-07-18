@@ -3,13 +3,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import {
-  Activity, AlarmClock, ArrowLeft, BarChart3, Bell, BookOpen, Bot, CalendarDays,
+  Activity, AlarmClock, ArrowLeft, ArrowRightLeft, BarChart3, Banknote, Bell, BookOpen, Bot, CalendarDays,
   Camera, Check, CheckCircle2, ChevronDown, ChevronRight, CircleUserRound, ClipboardCheck,
-  Clock3, Copy, Download, FileDown, FileText, GraduationCap, HelpCircle, Home, KeyRound,
+  Clock3, Copy, Download, FileDown, FileText, GraduationCap, HelpCircle, Home, ImagePlus, KeyRound,
   LayoutDashboard, Link2, ListChecks, Loader2, LockKeyhole, LogOut, Menu, MessageCircle,
   MoreHorizontal, PencilLine, Plus, Printer, QrCode, RefreshCcw, ScanLine, School,
-  Search, Send, Settings, ShieldCheck, Sparkles, Timer, Trash2, Upload, UserCheck,
-  UserPlus, Users, X, XCircle,
+  Search, Send, Settings, ShieldAlert, ShieldCheck, Sparkles, Timer, Trash2, Upload, UserCheck,
+  UserPlus, Users, Wallet, X, XCircle,
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import {
@@ -18,7 +18,7 @@ import {
 } from "firebase/auth";
 import {
   addDoc, arrayUnion, collection, deleteDoc, deleteField, doc, getDoc, onSnapshot, orderBy, query, serverTimestamp,
-  setDoc, updateDoc, where, writeBatch,
+  runTransaction, setDoc, updateDoc, where, writeBatch,
 } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
 import { parseStudentsCsv } from "../lib/csv";
@@ -30,11 +30,13 @@ import { AcademicView, ScoresView } from "./GradeViews";
 import { AttendanceViewPro, ScannerViewPro } from "./OperationalViews";
 import { PublicQuizProfessional } from "./ExamPortal";
 import { ProfileProfessional, SuperAdminProfessional } from "./AdminViews";
+import { LoginArticlePreview, PublicArticles } from "./ArticleViews";
 
 type Student = {
   id: string;
   attendanceNumber?: string;
   nis: string;
+  nisn?: string;
   name: string;
   className: string;
   guardian?: string;
@@ -44,24 +46,24 @@ type Student = {
   photoAspect?: PhotoAspect;
 };
 
-type AttendanceStatus = "present" | "sick" | "permission";
+type AbsensiStatus = "present" | "sick" | "permission";
 
-type AttendanceRecord = {
+type AbsensiRecord = {
   studentId: string;
-  status: AttendanceStatus;
+  status: AbsensiStatus;
   recordedAtMs: number;
   source: "qr" | "manual" | "guardian";
   reason?: string;
 };
 
-type AttendanceSession = {
+type AbsensiSession = {
   id: string;
   className: string;
   schoolName: string;
   status: "open" | "closed";
   startedAtMs: number;
   closedAtMs?: number;
-  records: Record<string, AttendanceRecord>;
+  records: Record<string, AbsensiRecord>;
 };
 
 type AbsenceSnapshot = {
@@ -71,7 +73,7 @@ type AbsenceSnapshot = {
   published: boolean;
   schoolName: string;
   dateLabel: string;
-  student: Pick<Student, "id" | "nis" | "name" | "className">;
+  student: Pick<Student, "id" | "nis" | "nisn" | "name" | "className">;
 };
 
 type TaskRecord = {
@@ -92,12 +94,15 @@ type TaskForm = Omit<TaskRecord, "id" | "snapshotId" | "teacherName" | "createdA
 type ExamRecord = {
   id: string;
   title: string;
+  subjectId?: string;
   subject: string;
   className: string;
   chapter?: string;
   questions: QuizQuestion[];
   status: "draft" | "scheduled" | "published" | "finished";
   source?: "ai" | "manual";
+  gradeCategory?: GradeCategory;
+  assessmentType?: "daily_test" | "quiz" | "pts_sts" | "pas_sas";
   snapshotId?: string;
 durationMinutes?: number;
   startAtMs?: number;
@@ -105,6 +110,52 @@ durationMinutes?: number;
   targetStudentCount?: number;
   createdAt?: { toMillis?: () => number; toDate?: () => Date } | null;
 };
+
+type SubjectRecord = {
+  id: string;
+  name: string;
+  category: "mandatory" | "optional";
+  icon: string;
+  color: string;
+  protected?: boolean;
+  createdAt?: { toMillis?: () => number } | null;
+};
+
+type LearningNote = {
+  id: string;
+  subjectId: string;
+  subjectName: string;
+  className: string;
+  date?: string;
+  day?: string;
+  startTime?: string;
+  endTime?: string;
+  title: string;
+  content: string;
+  followUp?: string;
+  createdAtMs?: number;
+  updatedAtMs: number;
+};
+
+type ActiveTeachingSession = {
+  subjectId: string;
+  subjectName: string;
+  className: string;
+  startTime: string;
+  endTime: string;
+};
+
+function learningDateKey(value: Date | number = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function learningNoteSessionId(session: ActiveTeachingSession, date: string) {
+  return `session-${date}-${session.subjectId}-${session.className}-${session.startTime}-${session.endTime}`
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
 
 type QuizAttempt = {
   id: string;
@@ -151,6 +202,25 @@ type AcademicSettings = {
   kkm: number;
 };
 
+type SavingsTransaction = {
+  id: string;
+  ownerUid: string;
+  studentId: string;
+  studentName: string;
+  nis: string;
+  nisn?: string;
+  className: string;
+  type: "deposit" | "withdrawal";
+  amount: number;
+  transactionDate: string;
+  note: string;
+  officerName: string;
+  status: "active" | "void";
+  createdAtMs: number;
+  updatedAtMs?: number;
+  voidReason?: string;
+};
+
 type PublicQuizSnapshot = {
   ownerUid: string;
   examId: string;
@@ -164,22 +234,22 @@ type PublicQuizSnapshot = {
 durationMinutes: number;
   startAtMs?: number;
   endAtMs?: number;
-  students: Pick<Student, "id" | "nis" | "name" | "className">[];
+  students: Pick<Student, "id" | "nis" | "nisn" | "name" | "className">[];
 };
 
-type NavKey = "dashboard" | "students" | "scan" | "attendance" | "tasks" | "exams" | "ai" | "scores" | "profile" | "academic";
+type NavKey = "dashboard" | "students" | "scan" | "attendance" | "savings" | "subjects" | "tasks" | "exams" | "ai" | "scores" | "profile" | "academic";
 type Toast = { message: string; tone: "success" | "error" } | null;
 
 const SUPERADMIN_EMAIL = (process.env.NEXT_PUBLIC_SUPERADMIN_EMAIL ?? "idhamdjuanda@gmail.com").toLowerCase();
 
 const GRADE_CATEGORIES: { key: GradeCategory; label: string; description: string }[] = [
   { key: "task", label: "Tugas", description: "Tugas aplikasi dan tugas offline" },
-  { key: "quiz", label: "Quiz", description: "Kuis singkat dan evaluasi formatif" },
+  { key: "quiz", label: "Kuis", description: "Kuis singkat dan evaluasi formatif" },
   { key: "summative", label: "Ulangan Harian / Sumatif", description: "Soal & Ulangan reguler" },
   { key: "midterm", label: "PTS / STS", description: "Penilaian tengah semester" },
   { key: "final", label: "PAS / SAS", description: "Penilaian akhir semester" },
   { key: "practice", label: "Praktik", description: "Praktik, lisan, hafalan, dan presentasi" },
-  { key: "project", label: "Project", description: "Proyek individu atau kelompok" },
+  { key: "project", label: "Proyek", description: "Proyek individu atau kelompok" },
   { key: "attitude", label: "Sikap", description: "Observasi dan penilaian sikap" },
 ];
 
@@ -196,7 +266,7 @@ const DEFAULT_GRADE_WEIGHTS: GradeWeights = {
 
 const MANUAL_ASSESSMENT_TYPES: { value: string; label: string; category: GradeCategory }[] = [
   { value: "task_offline", label: "Tugas offline", category: "task" },
-  { value: "quiz", label: "Quiz", category: "quiz" },
+  { value: "quiz", label: "Kuis", category: "quiz" },
   { value: "daily_test", label: "Soal & Ulangan", category: "summative" },
   { value: "pts_sts", label: "PTS / STS", category: "midterm" },
   { value: "pas_sas", label: "PAS / SAS", category: "final" },
@@ -204,31 +274,46 @@ const MANUAL_ASSESSMENT_TYPES: { value: string; label: string; category: GradeCa
   { value: "oral", label: "Lisan", category: "practice" },
   { value: "memorization", label: "Hafalan", category: "practice" },
   { value: "presentation", label: "Presentasi", category: "practice" },
-  { value: "project", label: "Project", category: "project" },
+  { value: "project", label: "Proyek", category: "project" },
   { value: "attitude", label: "Sikap", category: "attitude" },
 ];
 
 const DEFAULT_ACADEMIC_SETTINGS: AcademicSettings = {
-  schoolName: "SMP Harapan Bangsa",
+  schoolName: "SDN Papandayan 1",
   academicYear: "2026/2027",
   semester: "Ganjil",
-  classNames: ["VII A", "VII B"],
+  classNames: ["V-A", "V-B"],
   entryTime: "07:00",
   kkm: 75,
 };
 
+const MANDATORY_SUBJECTS: SubjectRecord[] = [
+  { id: "mandatory-pancasila", name: "Pendidikan Pancasila", category: "mandatory", icon: "BookOpen", color: "#0f766e", protected: true },
+  { id: "mandatory-religion", name: "Pendidikan Agama", category: "mandatory", icon: "BookOpen", color: "#047857", protected: true },
+  { id: "mandatory-indonesian", name: "Bahasa Indonesia", category: "mandatory", icon: "BookOpen", color: "#2563eb", protected: true },
+  { id: "mandatory-mathematics", name: "Matematika", category: "mandatory", icon: "Calculator", color: "#7c3aed", protected: true },
+  { id: "mandatory-science", name: "IPA", category: "mandatory", icon: "Flask", color: "#0891b2", protected: true },
+  { id: "mandatory-social-science", name: "IPS", category: "mandatory", icon: "Globe", color: "#d97706", protected: true },
+  { id: "mandatory-english", name: "Bahasa Inggris", category: "mandatory", icon: "Languages", color: "#db2777", protected: true },
+  { id: "mandatory-art", name: "Seni Budaya", category: "mandatory", icon: "BookOpen", color: "#9333ea", protected: true },
+  { id: "mandatory-sport", name: "PJOK", category: "mandatory", icon: "Activity", color: "#16a34a", protected: true },
+  { id: "mandatory-informatics", name: "Informatika", category: "mandatory", icon: "Bot", color: "#475569", protected: true },
+];
+
+const DEFAULT_ACTIVE_SESSION: ActiveTeachingSession = { subjectId: "mandatory-mathematics", subjectName: "Matematika", className: "V-A", startTime: "08:00", endTime: "09:30" };
+
 const demoStudents: Student[] = [
-  { id: "1", attendanceNumber: "1", nis: "24001", name: "Alya Putri Ramadhani", className: "VII A", guardian: "Dian Ramadhani", phone: "628123456781" },
-  { id: "2", attendanceNumber: "2", nis: "24002", name: "Bima Arya Pratama", className: "VII A", guardian: "Rudi Pratama", phone: "628123456782" },
-  { id: "3", attendanceNumber: "3", nis: "24003", name: "Citra Lestari", className: "VII A", guardian: "Siti Lestari", phone: "628123456783" },
-  { id: "4", attendanceNumber: "1", nis: "24004", name: "Daffa Maulana", className: "VII B", guardian: "Hendra Maulana", phone: "628123456784" },
-  { id: "5", attendanceNumber: "2", nis: "24005", name: "Eka Nuraini", className: "VII B", guardian: "Nur Hasanah", phone: "628123456785" },
+  { id: "SMART-ATT-001", attendanceNumber: "1", nis: "24001", nisn: "3123456789", name: "Alya Putri Ramadhani", className: "V-A", guardian: "Dian Ramadhani", phone: "628123456781" },
+  { id: "SMART-ATT-002", attendanceNumber: "2", nis: "24002", nisn: "3123456790", name: "Bima Arya Pratama", className: "V-A", guardian: "Rudi Pratama", phone: "628123456782" },
+  { id: "SMART-ATT-003", attendanceNumber: "3", nis: "24003", nisn: "3123456791", name: "Citra Lestari", className: "V-A", guardian: "Siti Lestari", phone: "628123456783" },
+  { id: "SMART-ATT-004", attendanceNumber: "1", nis: "24004", nisn: "3123456792", name: "Daffa Maulana", className: "V-B", guardian: "Hendra Maulana", phone: "628123456784" },
+  { id: "SMART-ATT-005", attendanceNumber: "2", nis: "24005", nisn: "3123456793", name: "Eka Nuraini", className: "V-B", guardian: "Nur Hasanah", phone: "628123456785" },
 ];
 
 const demoTasks: TaskRecord[] = [
-  { id: "demo-task-1", subject: "Matematika", className: "VII A", title: "Persamaan Linear Satu Variabel", description: "Kerjakan soal latihan pada buku paket halaman 42 nomor 1–10. Tuliskan cara penyelesaian dengan lengkap di buku tugas.", deadline: "2026-07-15T23:59", published: true, snapshotId: "demo", teacherName: "Tomi Guru" },
-  { id: "demo-task-2", subject: "Bahasa Indonesia", className: "VII B", title: "Meringkas Teks Eksplanasi", description: "Baca teks eksplanasi yang dibagikan, lalu buat ringkasan sebanyak tiga paragraf menggunakan bahasa sendiri.", deadline: "2026-07-18T20:00", published: true, snapshotId: "demo-2", teacherName: "Tomi Guru" },
-  { id: "demo-task-3", subject: "IPA", className: "VII A", title: "Pengamatan Ekosistem Sekolah", description: "Catat lima komponen biotik dan abiotik yang ditemukan di lingkungan sekolah.", deadline: "2026-07-10T15:00", published: false, teacherName: "Tomi Guru" },
+  { id: "demo-task-1", subject: "Matematika", className: "V-A", title: "Persamaan Linear Satu Variabel", description: "Kerjakan soal latihan pada buku paket halaman 42 nomor 1–10. Tuliskan cara penyelesaian dengan lengkap di buku tugas.", deadline: "2026-07-15T23:59", published: true, snapshotId: "demo", teacherName: "Tomi Guru" },
+  { id: "demo-task-2", subject: "Bahasa Indonesia", className: "V-B", title: "Meringkas Teks Eksplanasi", description: "Baca teks eksplanasi yang dibagikan, lalu buat ringkasan sebanyak tiga paragraf menggunakan bahasa sendiri.", deadline: "2026-07-18T20:00", published: true, snapshotId: "demo-2", teacherName: "Tomi Guru" },
+  { id: "demo-task-3", subject: "IPA", className: "V-A", title: "Pengamatan Ekosistem Sekolah", description: "Catat lima komponen biotik dan abiotik yang ditemukan di lingkungan sekolah.", deadline: "2026-07-10T15:00", published: false, teacherName: "Tomi Guru" },
 ];
 
 const navGroups: { label: string; items: { key: NavKey; label: string; icon: typeof Home }[] }[] = [
@@ -237,8 +322,10 @@ const navGroups: { label: string; items: { key: NavKey; label: string; icon: typ
     { key: "students", label: "Data Siswa", icon: Users },
     { key: "scan", label: "Scan Absensi", icon: ScanLine },
     { key: "attendance", label: "Rekap Absensi", icon: BarChart3 },
+    { key: "savings", label: "Tabungan Siswa", icon: Wallet },
   ] },
   { label: "PEMBELAJARAN", items: [
+    { key: "subjects", label: "Mata Pelajaran", icon: BookOpen },
     { key: "tasks", label: "Tugas & PR", icon: BookOpen },
     { key: "exams", label: "Soal & Ulangan", icon: ClipboardCheck },
     { key: "ai", label: "Generator Soal AI", icon: Sparkles },
@@ -256,7 +343,7 @@ function Logo({ compact = false }: { compact?: boolean }) {
       <img src="/logo.png" alt="Logo SMART-ATT" className={`${compact ? "h-10 w-10" : "h-12 w-12"} rounded-2xl object-cover shadow-lg shadow-teal-950/20`} />
       <div className={compact ? "hidden lg:block" : ""}>
         <p className="text-lg font-black tracking-tight text-slate-950">SMART-ATT</p>
-        <p className="text-[11px] font-medium text-slate-500">Absensi QR & Smart Quiz</p>
+        <p className="text-[11px] font-medium text-slate-500">Absensi QR & Kuis Cerdas</p>
       </div>
     </div>
   );
@@ -338,7 +425,8 @@ function AuthScreen({ onDemo }: { onDemo: () => void }) {
           <div className="mb-7 inline-flex items-center gap-2 rounded-full border border-teal-300/20 bg-teal-300/10 px-4 py-2 text-xs font-bold text-teal-100"><ShieldCheck size={15} /> Platform sekolah terintegrasi</div>
           <h1 className="text-5xl font-black leading-[1.08] tracking-tight">Kehadiran tertib.<br /><span className="text-teal-300">Belajar lebih cerdas.</span></h1>
           <p className="mt-6 max-w-lg text-base leading-7 text-slate-300">Kelola absensi QR, data siswa, tugas, dan ujian online dalam satu ruang kerja yang ringan untuk guru.</p>
-          <div className="mt-10 grid grid-cols-3 gap-4">
+          <LoginArticlePreview />
+          <div className="mt-8 grid grid-cols-3 gap-4">
             {[['< 3 dtk', 'Scan QR'], ['24/7', 'Akses data'], ['1 aplikasi', 'Semua kelas']].map(([value, label]) => <div key={label} className="rounded-2xl border border-white/10 bg-white/[0.06] p-4"><p className="text-xl font-black text-white">{value}</p><p className="mt-1 text-xs text-slate-400">{label}</p></div>)}
           </div>
         </div>
@@ -353,6 +441,7 @@ function AuthScreen({ onDemo }: { onDemo: () => void }) {
             <h2 className="text-3xl font-black tracking-tight text-slate-950">{mode === "login" ? "Masuk ke akun Anda" : "Mulai gratis 14 hari"}</h2>
             <p className="mt-2 text-sm text-slate-500">{mode === "login" ? "Gunakan email sekolah yang telah terdaftar." : "Siapkan ruang kerja sekolah Anda dalam beberapa langkah."}</p>
           </div>
+          <div className="mb-6 lg:hidden"><LoginArticlePreview variant="light" /></div>
           <form onSubmit={submit} className="space-y-4">
             {mode === "register" && <>
               <Field label="Nama lengkap" value={name} onChange={setName} placeholder="Nama guru" required />
@@ -369,8 +458,8 @@ function AuthScreen({ onDemo }: { onDemo: () => void }) {
             <button type="button" onClick={() => { setMode(mode === "login" ? "register" : "login"); setError(""); }} className="font-bold text-slate-700 hover:text-teal-700">{mode === "login" ? "Daftar akun" : "Sudah punya akun"}</button>
           </div>
           <div className="my-7 flex items-center gap-3 text-xs font-bold text-slate-400"><span className="h-px flex-1 bg-slate-200" />ATAU<span className="h-px flex-1 bg-slate-200" /></div>
-          <button onClick={onDemo} className="h-12 w-full rounded-xl border border-slate-200 bg-white text-sm font-extrabold text-slate-700 shadow-sm transition hover:border-teal-300 hover:text-teal-700">Lihat demo dashboard guru</button>
-          <p className="mt-8 text-center text-xs leading-5 text-slate-400">Dengan masuk, Anda menyetujui ketentuan layanan dan kebijakan privasi SMART-ATT.</p>
+          <button onClick={onDemo} className="h-12 w-full rounded-xl border border-slate-200 bg-white text-sm font-extrabold text-slate-700 shadow-sm transition hover:border-teal-300 hover:text-teal-700">Lihat demo dasbor guru</button>
+          <div className="mt-8 space-y-3 text-center"><p className="text-xs leading-5 text-slate-400">Dengan masuk, Anda menyetujui ketentuan layanan SMART-ATT.</p><PublicInfoLinks className="text-slate-500" /></div>
         </div>
       </section>
     </main>
@@ -381,6 +470,93 @@ function Field({ label, value, onChange, placeholder, type = "text", required = 
   return <label className="block"><span className="mb-2 block text-xs font-extrabold text-slate-700">{label}</span><input required={required} type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className="h-12 w-full rounded-xl border border-slate-200 bg-white px-4 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10" /></label>;
 }
 
+type PublicInfoKind = "faq" | "terms" | "refund" | "contact";
+
+const PUBLIC_INFO: Record<Exclude<PublicInfoKind, "contact">, { label: string; title: string; lead: string; entries: { title: string; body: string }[] }> = {
+  faq: {
+    label: "PUSAT BANTUAN", title: "Pertanyaan yang sering ditanyakan", lead: "Panduan singkat untuk memulai memakai SMART-ATT di sekolah.",
+    entries: [
+      { title: "Apa itu SMART-ATT?", body: "SMART-ATT adalah platform untuk mengelola absensi QR, data siswa, komunikasi wali, tugas, dan ujian online dalam satu akun guru." },
+      { title: "Apakah tersedia masa percobaan?", body: "Ya. Akun guru baru memperoleh masa trial selama 14 hari untuk mencoba fitur SMART-ATT." },
+      { title: "Bagaimana memperpanjang masa aktif akun?", body: "Hubungi admin SMART-ATT untuk membeli token. Setelah menerima token, masukkan pada menu Token atau halaman aktivasi akun." },
+      { title: "Apakah data siswa aman?", body: "Data dipisahkan per akun guru. Guru hanya dapat mengelola data di ruang kerjanya sendiri, kecuali ada proses persetujuan saat berbagi siswa antar kelas." },
+      { title: "Bagaimana jika QR siswa tidak terbaca?", body: "Cetak ulang kartu QR dari menu Data Siswa guru asal, gunakan pencahayaan cukup, lalu arahkan kamera pada QR besar di kartu." },
+      { title: "Bagaimana menghubungi bantuan?", body: "Gunakan WhatsApp admin pada halaman Kontak dan sertakan nama sekolah, email akun, serta kendala yang dialami." }
+    ]
+  },
+  terms: {
+    label: "DOKUMEN LAYANAN", title: "Syarat & Ketentuan", lead: "Berlaku efektif 16 Juli 2026 untuk seluruh pengguna SMART-ATT.",
+    entries: [
+      { title: "1. Penggunaan layanan", body: "SMART-ATT disediakan untuk kegiatan administrasi dan pembelajaran sekolah. Pengguna wajib memakai layanan secara sah, bertanggung jawab, dan tidak mengganggu keamanan sistem." },
+      { title: "2. Akun dan keamanan", body: "Pemilik akun bertanggung jawab menjaga email, password, token, serta perangkat yang digunakan. Jangan membagikan akses akun kepada pihak yang tidak berwenang." },
+      { title: "3. Data sekolah dan siswa", body: "Pengguna memastikan data yang diinput benar dan memiliki dasar yang sah untuk mengelola data siswa maupun wali. Pengguna wajib menggunakan data sesuai kebutuhan pendidikan." },
+      { title: "4. Trial dan token", body: "Trial berlaku sesuai durasi yang ditampilkan pada akun. Setelah masa aktif berakhir, fitur akun dapat dikunci sampai token aktivasi yang sah diterapkan." },
+      { title: "5. Larangan", body: "Dilarang memakai SMART-ATT untuk penyalahgunaan data, akses tanpa izin, mengirim konten melanggar hukum, mengganggu sistem, atau tindakan yang merugikan pengguna lain." },
+      { title: "6. Perubahan layanan", body: "SMART-ATT dapat memperbarui fitur, keamanan, dan ketentuan layanan untuk menjaga kualitas sistem. Perubahan penting akan disampaikan melalui aplikasi atau kanal resmi." }
+    ]
+  },
+  refund: {
+    label: "KEBIJAKAN PEMBAYARAN", title: "Kebijakan Pengembalian Dana", lead: "Kebijakan pengembalian dana untuk pembelian token SMART-ATT.",
+    entries: [
+      { title: "Token adalah produk digital", body: "Token yang sudah berhasil diaktifkan dan memperpanjang masa aktif akun pada umumnya tidak dapat dikembalikan karena layanan digital telah digunakan." },
+      { title: "Kondisi yang dapat ditinjau", body: "Permohonan refund dapat diajukan untuk pembayaran ganda, nominal salah akibat kesalahan sistem, atau token tidak dapat digunakan karena gangguan dari SMART-ATT." },
+      { title: "Bukan alasan refund", body: "Refund tidak berlaku untuk salah memasukkan email, lupa password, perubahan kebutuhan pengguna, atau token yang sudah berhasil dipakai sesuai durasinya." },
+      { title: "Cara mengajukan", body: "Hubungi admin melalui WhatsApp maksimal 7 hari setelah pembayaran. Sertakan bukti pembayaran, email akun, kode token bila ada, serta penjelasan kendala." },
+      { title: "Proses pemeriksaan", body: "Admin akan memverifikasi transaksi dan memberi keputusan melalui kanal kontak resmi. Jika disetujui, pengembalian dilakukan dengan metode yang disepakati dan sesuai ketentuan yang berlaku." }
+    ]
+  }
+};
+
+function PublicInfoLinks({ className = "" }: { className?: string }) {
+  return <nav aria-label="Informasi SMART-ATT" className={`flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-xs font-bold ${className}`}><a href="/faq" className="hover:text-teal-600 hover:underline">FAQ</a><a href="/syarat-ketentuan" className="hover:text-teal-600 hover:underline">Syarat & Ketentuan</a><a href="/refund-policy" className="hover:text-teal-600 hover:underline">Kebijakan Pengembalian Dana</a><a href="/kontak" className="hover:text-teal-600 hover:underline">Kontak</a></nav>;
+}
+
+function PublicInfoPage({ kind }: { kind: PublicInfoKind }) {
+  const isContact = kind === "contact";
+  const content = isContact ? null : PUBLIC_INFO[kind];
+  const title = isContact ? "Hubungi SMART-ATT" : content!.title;
+  const lead = isContact ? "Tim SMART-ATT siap membantu pertanyaan akun, token, dan penggunaan aplikasi." : content!.lead;
+  return <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,#dff9f3,transparent_34%),linear-gradient(135deg,#f7fbff,#fffaf0)] text-slate-900"><header className="mx-auto flex w-full max-w-5xl items-center justify-between gap-4 px-5 py-5 sm:px-8"><a href="/" className="flex items-center gap-3"><img src="/logo.png" alt="SMART-ATT" className="h-10 w-10 rounded-xl object-cover shadow-sm"/><span><strong className="block text-sm font-black tracking-wide">SMART-ATT</strong><span className="block text-[10px] font-bold text-slate-500">Absensi QR & Kuis Cerdas</span></span></a><a href="/" className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 shadow-sm hover:border-teal-300 hover:text-teal-700"><ArrowLeft size={15}/>Kembali</a></header><section className="mx-auto w-full max-w-4xl px-5 pb-14 pt-6 sm:px-8 sm:pt-12"><div className="rounded-3xl border border-teal-100 bg-white p-6 shadow-xl shadow-slate-900/5 sm:p-10"><p className="text-[11px] font-black tracking-[.18em] text-teal-600">{isContact ? "KONTAK RESMI" : content!.label}</p><h1 className="mt-3 text-3xl font-black tracking-tight sm:text-4xl">{title}</h1><p className="mt-3 max-w-2xl text-sm leading-6 text-slate-500 sm:text-base">{lead}</p>{isContact ? <div className="mt-8 grid gap-4 sm:grid-cols-2"><a href="https://wa.me/6285176932228?text=Halo%20Admin%20SMART-ATT%2C%20saya%20butuh%20bantuan." target="_blank" rel="noreferrer" className="rounded-2xl border border-emerald-100 bg-emerald-50 p-5 transition hover:-translate-y-0.5 hover:shadow-md"><MessageCircle className="text-emerald-600" size={24}/><h2 className="mt-4 font-black">WhatsApp Admin</h2><p className="mt-1 text-sm text-slate-600">0851-7693-2228</p><p className="mt-3 text-xs font-bold text-emerald-700">Chat untuk token dan bantuan akun →</p></a><a href="mailto:idhamdjuanda@gmail.com?subject=Bantuan%20SMART-ATT" className="rounded-2xl border border-sky-100 bg-sky-50 p-5 transition hover:-translate-y-0.5 hover:shadow-md"><Send className="text-sky-600" size={24}/><h2 className="mt-4 font-black">Email Dukungan</h2><p className="mt-1 break-all text-sm text-slate-600">idhamdjuanda@gmail.com</p><p className="mt-3 text-xs font-bold text-sky-700">Sertakan nama sekolah dan email akun →</p></a></div> : <div className="mt-8 space-y-3">{content!.entries.map((entry) => <article key={entry.title} className="rounded-2xl border border-slate-100 bg-slate-50/80 p-5"><h2 className="text-sm font-black text-slate-900">{entry.title}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{entry.body}</p></article>)}</div>}<div className="mt-10 border-t border-slate-100 pt-6"><PublicInfoLinks className="text-slate-500"/><p className="mt-5 text-center text-[11px] font-medium text-slate-400">© 2026 SMART-ATT · Platform sekolah untuk Indonesia</p></div></div></section></main>;
+}
+const SMARTATT_ADMIN_WHATSAPP = "6285176932228";
+
+function AccountLockedScreen({ user, disabled, onLogout }: { user: User; disabled: boolean; onLogout: () => Promise<void> }) {
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+  const whatsappMessage = `Halo Admin SMART-ATT, saya ingin membeli token atau memperpanjang masa aktif SMART-ATT. Email akun saya: ${user.email ?? "-"}. Mohon informasi pembelian tokennya.`;
+  const whatsappUrl = `https://wa.me/${SMARTATT_ADMIN_WHATSAPP}?text=${encodeURIComponent(whatsappMessage)}`;
+
+  async function activateToken() {
+    const code = token.trim().toUpperCase();
+    if (!code) { setError("Masukkan token aktivasi yang diberikan admin."); return; }
+    setBusy(true); setError(""); setMessage("");
+    try {
+      await runTransaction(db, async (transaction) => {
+        const tokenRef = doc(db, "activationTokens", code);
+        const userRef = doc(db, "users", user.uid);
+        const [tokenSnapshot, userSnapshot] = await Promise.all([transaction.get(tokenRef), transaction.get(userRef)]);
+        if (!tokenSnapshot.exists()) throw new Error("Token tidak ditemukan.");
+        const tokenData = tokenSnapshot.data() as { status?: string; tokenExpiresAtMs?: number; durationDays?: number };
+        const now = Date.now();
+        if (tokenData.status !== "active") throw new Error(tokenData.status === "used" ? "Token sudah digunakan." : "Token tidak aktif.");
+        if (!tokenData.tokenExpiresAtMs || tokenData.tokenExpiresAtMs <= now) throw new Error("Token sudah kedaluwarsa.");
+        if (!tokenData.durationDays) throw new Error("Durasi token tidak valid.");
+        const userData = userSnapshot.data() as { activeUntilMs?: number; trialEndsAt?: { toMillis?: () => number } } | undefined;
+        const base = Math.max(now, userData?.activeUntilMs ?? userData?.trialEndsAt?.toMillis?.() ?? 0);
+        const activeUntilMs = base + tokenData.durationDays * 86400000;
+        transaction.update(tokenRef, { status: "used", usedBy: user.uid, usedByEmail: user.email ?? "", usedAtMs: now, accountExpiresAtMs: activeUntilMs, usedAt: serverTimestamp() });
+        transaction.update(userRef, { status: "active", disabled: false, activeTokenId: code, tokenActivatedAtMs: now, activeUntilMs, updatedAt: serverTimestamp() });
+      });
+      setToken(""); setMessage("Token berhasil diaktifkan. SMART-ATT sedang membuka kembali akun Anda.");
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Token gagal diaktifkan."); }
+    finally { setBusy(false); }
+  }
+
+  return <main className="grid min-h-screen place-items-center bg-[radial-gradient(circle_at_top_left,#e7faf6,transparent_35%),linear-gradient(135deg,#f8fbff,#fff9ed)] p-5"><section className="w-full max-w-md rounded-3xl border border-rose-100 bg-white p-7 text-center shadow-xl sm:p-8"><div className="mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-rose-50 text-rose-600"><LockKeyhole size={32}/></div><h1 className="mt-5 text-2xl font-black">{disabled ? "Akun dinonaktifkan" : "Masa aktif SMART-ATT berakhir"}</h1><p className="mt-3 text-sm leading-6 text-slate-500">{disabled ? "Akun ini dinonaktifkan oleh administrator. Hubungi admin SMART-ATT untuk bantuan." : "Trial atau token akun Anda sudah habis. Seluruh fitur dikunci sampai masa aktif diperpanjang."}</p>{!disabled&&<div className="mt-6 rounded-2xl bg-slate-50 p-4 text-left"><label><span className="mb-2 block text-xs font-extrabold">Sudah punya token?</span><input value={token} onChange={(event) => { setToken(event.target.value.toUpperCase()); setError(""); }} placeholder="SATT-XXXXXXXXXXXX" className="h-12 w-full rounded-xl border border-slate-200 bg-white px-3 font-mono text-sm uppercase outline-none focus:border-teal-500"/></label><button disabled={busy || !token.trim()} onClick={() => void activateToken()} className="mt-3 flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-slate-950 text-sm font-extrabold text-white disabled:opacity-40">{busy ? <Loader2 className="animate-spin" size={17}/> : <ShieldCheck size={17}/>}Aktifkan token</button></div>}{error&&<p className="mt-3 rounded-xl bg-rose-50 p-3 text-xs font-bold text-rose-700">{error}</p>}{message&&<p className="mt-3 rounded-xl bg-emerald-50 p-3 text-xs font-bold text-emerald-700">{message}</p>}<a href={whatsappUrl} target="_blank" rel="noreferrer" className="mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 text-sm font-extrabold text-white"><MessageCircle size={18}/>Beli token SMART-ATT via WhatsApp</a><p className="mt-2 text-xs font-bold text-slate-500">Admin: 0851-7693-2228</p><button onClick={() => void onLogout()} className="mt-5 text-xs font-black text-slate-500 hover:text-slate-900">Keluar dari akun</button></section></main>;
+}
+
 function SmartAttApp() {
   const pathname = usePathname();
   const [user, setUser] = useState<User | null>(null);
@@ -388,12 +564,22 @@ function SmartAttApp() {
   const [demo, setDemo] = useState(false);
   const [view, setView] = useState<NavKey>("dashboard");
   const [students, setStudents] = useState<Student[]>([]);
+  const [activeSession, setActiveSession] = useState<ActiveTeachingSession>(DEFAULT_ACTIVE_SESSION);
   const [toast, setToast] = useState<Toast>(null);
-  const [accountDisabled, setAccountDisabled] = useState(false);
+  const [accountGate, setAccountGate] = useState({ loaded: false, disabled: false, expiryMs: 0, verificationError: false });
+  const [accountClock, setAccountClock] = useState(Date.now());
+  const [showVerificationError, setShowVerificationError] = useState(false);
+  const processingGuardianResponsesRef = useRef<Record<string, boolean>>({});
 
-  useEffect(() => onAuthStateChanged(auth, (nextUser) => { setUser(nextUser); setAuthReady(true); }), []);
+  useEffect(() => onAuthStateChanged(auth, (nextUser) => { setAccountGate({ loaded: !nextUser, disabled: false, expiryMs: 0, verificationError: false }); setUser(nextUser); setAuthReady(true); }), []);
+  useEffect(() => { const interval = setInterval(() => setAccountClock(Date.now()), 60000); return () => clearInterval(interval); }, []);
   useEffect(() => {
-    if (!user) { setAccountDisabled(false); return; }
+    if (!accountGate.verificationError) { setShowVerificationError(false); return; }
+    const timer = setTimeout(() => setShowVerificationError(true), 6000);
+    return () => clearTimeout(timer);
+  }, [accountGate.verificationError]);
+  useEffect(() => {
+    if (!user) { setAccountGate({ loaded: true, disabled: false, expiryMs: 0, verificationError: false }); return; }
     const userRef = doc(db, "users", user.uid);
     const markOnline = (login = false) => setDoc(userRef, {
       email: user.email?.toLowerCase() ?? "",
@@ -406,7 +592,32 @@ function SmartAttApp() {
     const heartbeat = setInterval(() => void markOnline(false), 60000);
     const visibility = () => { if (document.visibilityState === "visible") void markOnline(false); };
     document.addEventListener("visibilitychange", visibility);
-    const unsubscribe = onSnapshot(userRef, (snapshot) => setAccountDisabled(snapshot.data()?.disabled === true || snapshot.data()?.status === "disabled"));
+    const unsubscribe = onSnapshot(userRef, (snapshot) => {
+      void (async () => {
+        if (!snapshot.exists()) { setAccountGate({ loaded: true, disabled: false, expiryMs: 0, verificationError: true }); return; }
+        const data = snapshot.data();
+        const toMillis = (value: unknown) => {
+          if (typeof value === "number" && Number.isFinite(value)) return value;
+          if (typeof value === "string") { const parsed = Number(value); if (Number.isFinite(parsed)) return parsed; }
+          if (value && typeof value === "object" && "toMillis" in value && typeof (value as { toMillis?: unknown }).toMillis === "function") return (value as { toMillis: () => number }).toMillis();
+          return 0;
+        };
+        let expiryMs = toMillis(data.activeUntilMs) || toMillis(data.activeUntil) || toMillis(data.trialEndsAt);
+        if (!expiryMs && typeof data.activeTokenId === "string" && data.activeTokenId) {
+          try {
+            const tokenSnapshot = await getDoc(doc(db, "activationTokens", data.activeTokenId));
+            const tokenData = tokenSnapshot.data();
+            if (tokenSnapshot.exists() && tokenData?.usedBy === user.uid) expiryMs = toMillis(tokenData.accountExpiresAtMs) || toMillis(tokenData.accountExpiresAt);
+          } catch { /* Verifikasi error ditangani di bawah. */ }
+        }
+        setAccountGate({
+          loaded: true,
+          disabled: data.disabled === true || data.status === "disabled",
+          expiryMs,
+          verificationError: !expiryMs && data.status !== "disabled",
+        });
+      })();
+    }, () => setAccountGate({ loaded: true, disabled: false, expiryMs: 0, verificationError: true }));
     return () => {
       clearInterval(heartbeat); document.removeEventListener("visibilitychange", visibility); unsubscribe();
       void updateDoc(userRef, { online: false, lastSeenAtMs: Date.now(), updatedAt: serverTimestamp() }).catch(() => undefined);
@@ -419,18 +630,55 @@ function SmartAttApp() {
     return onSnapshot(q, (snap) => setStudents(snap.docs.map((item) => ({ id: item.id, ...item.data() } as Student))), () => setToast({ message: "Firestore belum siap. Periksa rules dan konfigurasi proyek.", tone: "error" }));
   }, [user, demo]);
   useEffect(() => {
+    if (demo) { setActiveSession(DEFAULT_ACTIVE_SESSION); return; }
+    if (!user) return;
+    return onSnapshot(doc(db, "users", user.uid, "settings", "activeTeachingSession"), (snapshot) => {
+      const data = snapshot.data() as Partial<ActiveTeachingSession> | undefined;
+      if (!data) return;
+      setActiveSession({
+        subjectId: typeof data.subjectId === "string" ? data.subjectId : DEFAULT_ACTIVE_SESSION.subjectId,
+        subjectName: typeof data.subjectName === "string" ? data.subjectName : DEFAULT_ACTIVE_SESSION.subjectName,
+        className: typeof data.className === "string" ? data.className : DEFAULT_ACTIVE_SESSION.className,
+        startTime: typeof data.startTime === "string" ? data.startTime : DEFAULT_ACTIVE_SESSION.startTime,
+        endTime: typeof data.endTime === "string" ? data.endTime : DEFAULT_ACTIVE_SESSION.endTime,
+      });
+    });
+  }, [user, demo]);
+  useEffect(() => {
     if (!user) return;
     const responsesQuery = query(collection(db, "publicResponses"), where("ownerUid", "==", user.uid));
     return onSnapshot(responsesQuery, (snapshot) => {
       for (const response of snapshot.docs) {
-        const data = response.data() as { studentId?: string; guardian?: string; phone?: string; status?: string };
+        const data = response.data() as { studentId?: string; guardian?: string; phone?: string; photoKey?: string; photoThumbnailKey?: string; photoAspect?: PhotoAspect; status?: string };
         if (data.status !== "pending" || !data.studentId || !data.guardian || !data.phone) continue;
-        void updateDoc(doc(db, "users", user.uid, "students", data.studentId), {
-          guardian: data.guardian,
-          phone: data.phone,
-          guardianUpdatedAt: serverTimestamp(),
-        }).then(() => updateDoc(response.ref, { status: "applied", appliedAt: serverTimestamp() }))
-          .catch(() => setToast({ message: "Kiriman wali diterima, tetapi belum dapat disinkronkan.", tone: "error" }));
+        const studentId = data.studentId;
+        if (processingGuardianResponsesRef.current[response.id]) continue;
+        processingGuardianResponsesRef.current[response.id] = true;
+        void (async () => {
+          try {
+            const photoUpdates: Record<string, string> = {};
+            if (data.photoKey && data.photoThumbnailKey) {
+              const token = await user.getIdToken();
+              const acceptPhoto = async (sourceKey: string) => {
+                const result = await fetch("/api/storage/accept-guardian-photo", { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ sourceKey, studentId }) });
+                if (!result.ok) throw new Error("Foto kiriman wali belum dapat dipindahkan ke data siswa.");
+                return (await result.json() as { key: string }).key;
+              };
+              const [photoKey, photoThumbnailKey] = await Promise.all([acceptPhoto(data.photoKey), acceptPhoto(data.photoThumbnailKey)]);
+              photoUpdates.photoKey = photoKey;
+              photoUpdates.photoThumbnailKey = photoThumbnailKey;
+              photoUpdates.photoAspect = data.photoAspect === "4:3" ? "4:3" : "3:4";
+            }
+            const updates = { guardian: data.guardian, phone: data.phone, ...photoUpdates, guardianUpdatedAt: serverTimestamp(), updatedAt: serverTimestamp() };
+            const batch = writeBatch(db);
+            batch.update(doc(db, "users", user.uid, "students", studentId), updates);
+            batch.set(doc(db, "studentDirectory", `${user.uid}__${studentId}`), { ownerUid: user.uid, studentId, ...updates }, { merge: true });
+            batch.set(doc(db, "studentDirectory", studentId), { ownerUid: user.uid, studentId, ...updates }, { merge: true });
+            batch.update(response.ref, { status: "applied", appliedAt: serverTimestamp() });
+            await batch.commit();
+          } catch { setToast({ message: "Kiriman wali diterima, tetapi belum dapat disinkronkan.", tone: "error" }); }
+          finally { delete processingGuardianResponsesRef.current[response.id]; }
+        })();
       }
     }, () => setToast({ message: "Kiriman data wali belum dapat dibaca.", tone: "error" }));
   }, [user]);
@@ -439,7 +687,7 @@ function SmartAttApp() {
     const responsesQuery = query(collection(db, "publicAbsenceResponses"), where("ownerUid", "==", user.uid));
     return onSnapshot(responsesQuery, (snapshot) => {
       for (const response of snapshot.docs) {
-        const data = response.data() as { snapshotId?: string; sessionId?: string; studentId?: string; attendanceStatus?: AttendanceStatus; reason?: string; status?: string };
+        const data = response.data() as { snapshotId?: string; sessionId?: string; studentId?: string; attendanceStatus?: AbsensiStatus; reason?: string; status?: string };
         if (data.status !== "pending" || !data.snapshotId || !data.sessionId || !data.studentId || !data.attendanceStatus || !data.reason) continue;
         const batch = writeBatch(db);
         batch.update(doc(db, "users", user.uid, "attendanceSessions", data.sessionId), {
@@ -460,6 +708,11 @@ function SmartAttApp() {
   }, [user]);
   useEffect(() => { if (!toast) return; const id = setTimeout(() => setToast(null), 3500); return () => clearTimeout(id); }, [toast]);
 
+  if (pathname === "/faq") return <PublicInfoPage kind="faq"/>;
+  if (pathname === "/syarat-ketentuan") return <PublicInfoPage kind="terms"/>;
+  if (pathname === "/refund-policy") return <PublicInfoPage kind="refund"/>;
+  if (pathname === "/kontak") return <PublicInfoPage kind="contact"/>;
+  if (pathname.startsWith("/articles")) { const slug=pathname.split("/").filter(Boolean)[1]; return <PublicArticles slug={slug}/>; }
   if (pathname.startsWith("/public/quiz")) return <PublicQuizProfessional />;
   if (pathname.startsWith("/public/task")) return <PublicTask />;
   if (pathname.startsWith("/public/absence")) return <AbsenceConfirmationForm />;
@@ -468,11 +721,14 @@ function SmartAttApp() {
   if (!authReady) return <div className="grid min-h-screen place-items-center bg-slate-50"><div className="text-center"><img src="/logo.png" alt="SMART-ATT" className="mx-auto h-20 w-20 animate-pulse rounded-3xl object-cover" /><p className="mt-4 text-sm font-bold text-slate-500">Menyiapkan SMART-ATT...</p></div></div>;
   if (!user && !demo) return <AuthScreen onDemo={() => setDemo(true)} />;
   const isSuperAdmin = user?.email?.toLowerCase() === SUPERADMIN_EMAIL;
-  if (isSuperAdmin && (pathname === "/" || pathname.startsWith("/superadmin"))) return <SuperAdminProfessional onLogout={async () => { if (user) await signOut(auth); setDemo(false); window.location.assign("/"); }} />;
+  if (isSuperAdmin && (pathname === "/" || pathname.startsWith("/superadmin"))) return <SuperAdminProfessional user={user!} onLogout={async () => { if (user) await signOut(auth); setDemo(false); window.location.assign("/"); }} />;
   if (pathname.startsWith("/superadmin")) return <SuperAdminDenied onLogout={async () => { if (user) await signOut(auth); setDemo(false); window.location.assign("/"); }} />;
-  if (accountDisabled) return <main className="grid min-h-screen place-items-center bg-slate-50 p-5"><section className="w-full max-w-md rounded-3xl border border-rose-100 bg-white p-8 text-center shadow-xl"><LockKeyhole className="mx-auto text-rose-600" size={42}/><h1 className="mt-5 text-2xl font-black">Akun dinonaktifkan</h1><p className="mt-2 text-sm leading-6 text-slate-500">Hubungi administrator SMART-ATT untuk mengaktifkan kembali akun sekolah Anda.</p><button onClick={async () => { if (user) await signOut(auth); }} className="mt-6 w-full rounded-xl bg-slate-950 py-3 text-sm font-extrabold text-white">Keluar</button></section></main>;
+  if (user && !demo && (!accountGate.loaded || (accountGate.verificationError && !showVerificationError))) return <div className="grid min-h-screen place-items-center bg-slate-50"><div className="text-center"><Loader2 className="mx-auto animate-spin text-teal-600" size={34}/><p className="mt-3 text-sm font-bold text-slate-500">Menyiapkan akun...</p></div></div>;
+  if (user && !demo && accountGate.verificationError && showVerificationError) return <main className="grid min-h-screen place-items-center bg-slate-50 p-5"><section className="w-full max-w-md rounded-3xl border border-amber-100 bg-white p-8 text-center shadow-xl"><RefreshCcw className="mx-auto text-amber-600" size={40}/><h1 className="mt-5 text-2xl font-black">Status akun belum terbaca</h1><p className="mt-3 text-sm leading-6 text-slate-500">Koneksi ke data masa aktif sedang terganggu. Akun tidak dianggap expired dan Anda tidak perlu membeli token lagi.</p><button onClick={() => window.location.reload()} className="mt-6 w-full rounded-xl bg-teal-600 py-3 text-sm font-extrabold text-white">Coba verifikasi lagi</button><button onClick={() => void signOut(auth)} className="mt-4 text-xs font-black text-slate-500">Keluar dari akun</button></section></main>;
+  if (user && !demo && accountGate.disabled) return <AccountLockedScreen user={user} disabled onLogout={async () => { await signOut(auth); }} />;
+  if (user && !demo && accountGate.expiryMs > 0 && accountGate.expiryMs <= accountClock) return <AccountLockedScreen user={user} disabled={false} onLogout={async () => { await signOut(auth); }} />;
 
-  return <><DashboardShell user={user} demo={demo} view={view} onView={setView} onLogout={async () => { if (user) await signOut(auth); setDemo(false); }} students={students} setStudents={setStudents} setToast={setToast} /><ToastMessage toast={toast} /></>;
+  return <><DashboardShell user={user} demo={demo} view={view} onView={setView} onLogout={async () => { if (user) await signOut(auth); setDemo(false); }} students={students} setStudents={setStudents} setToast={setToast} activeSession={activeSession} setActiveSession={setActiveSession} /><ToastMessage toast={toast} /></>;
 }
 
 function SuperAdminDenied({ onLogout }: { onLogout: () => void }) {
@@ -492,17 +748,81 @@ function SuperAdmin({ onLogout }: { onLogout: () => void }) {
     setGeneratedToken(`SATT-${random}`);
   }
   return <main className="min-h-screen bg-[#f4f7f9]">
-    <header className="border-b border-slate-200 bg-white"><div className="mx-auto flex h-20 max-w-7xl items-center justify-between px-5"><Logo/><div className="flex items-center gap-3"><span className="rounded-full bg-slate-950 px-3 py-1.5 text-[10px] font-black text-white">SUPER ADMIN</span><button onClick={onLogout} className="rounded-xl border border-slate-200 p-2.5 text-slate-500"><LogOut size={18}/></button></div></div></header>
-    <div className="mx-auto max-w-7xl p-5 sm:p-8"><SectionHeading eyebrow="Control Center" title="Panel superadmin" description="Kelola aktivasi, trial, dan akun sekolah SMART-ATT."/>
+    <header className="border-b border-slate-200 bg-white"><div className="mx-auto flex h-20 max-w-7xl items-center justify-between px-5"><Logo/><div className="flex items-center gap-3"><span className="rounded-full bg-slate-950 px-3 py-1.5 text-[10px] font-black text-white">ADMIN UTAMA</span><button onClick={onLogout} className="rounded-xl border border-slate-200 p-2.5 text-slate-500"><LogOut size={18}/></button></div></div></header>
+    <div className="mx-auto max-w-7xl p-5 sm:p-8"><SectionHeading eyebrow="Pusat Kendali" title="Panel superadmin" description="Kelola aktivasi, trial, dan akun sekolah SMART-ATT."/>
       <div className="grid gap-4 sm:grid-cols-3"><StatCard label="Total akun guru" value="128" note="12 pendaftar bulan ini" icon={Users} tone="bg-sky-50 text-sky-600"/><StatCard label="Akun aktif" value="104" note="81,2% dari total akun" icon={UserCheck} tone="bg-emerald-50 text-emerald-600"/><StatCard label="Trial berjalan" value="17" note="5 berakhir minggu ini" icon={Clock3} tone="bg-amber-50 text-amber-600"/></div>
-      <div className="mt-6 grid gap-6 xl:grid-cols-[.65fr_1.35fr]"><section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="mb-5 flex items-center gap-3"><div className="rounded-xl bg-teal-50 p-3 text-teal-700"><KeyRound size={21}/></div><div><h3 className="font-black">Token aktivasi</h3><p className="text-xs text-slate-400">Buat token sekali pakai.</p></div></div><label className="block"><span className="mb-2 block text-xs font-extrabold">Masa aktif</span><select value={tokenDuration} onChange={(e)=>setTokenDuration(e.target.value)} className="h-12 w-full rounded-xl border border-slate-200 bg-white px-4 text-sm"><option>1 hari</option><option>14 hari</option><option>1 bulan</option></select></label><button onClick={generateToken} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-teal-600 py-3 text-sm font-extrabold text-white"><RefreshCcw size={16}/>Generate token</button>{generatedToken&&<div className="mt-4 rounded-xl bg-slate-950 p-4 text-center"><p className="text-[10px] font-bold text-slate-400">TOKEN · {tokenDuration.toUpperCase()}</p><p className="mt-2 font-mono text-lg font-black tracking-wider text-teal-300">{generatedToken}</p></div>}</section>
-      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="flex items-center justify-between border-b border-slate-100 p-5"><div><h3 className="font-black">Akun sekolah</h3><p className="mt-1 text-xs text-slate-400">Status langganan dan masa berlaku.</p></div><div className="relative hidden sm:block"><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={15}/><input placeholder="Cari akun..." className="h-10 rounded-xl border border-slate-200 pl-9 pr-3 text-xs outline-none"/></div></div><div className="overflow-x-auto"><table className="w-full min-w-[700px]"><thead className="bg-slate-50 text-left text-[10px] uppercase tracking-wider text-slate-400"><tr><th className="px-5 py-3">Guru</th><th className="px-4 py-3">Sekolah</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Sisa aktif</th><th className="px-5 py-3"></th></tr></thead><tbody className="divide-y divide-slate-100">{accounts.map((account)=><tr key={account.email}><td className="px-5 py-4"><p className="text-sm font-extrabold">{account.name}</p><p className="text-[10px] text-slate-400">{account.email}</p></td><td className="px-4 py-4 text-xs font-bold text-slate-600">{account.school}</td><td className="px-4 py-4"><span className={`rounded-lg px-2.5 py-1.5 text-xs font-bold ${account.status==='Aktif'?'bg-emerald-50 text-emerald-700':account.status==='Trial'?'bg-amber-50 text-amber-700':'bg-rose-50 text-rose-700'}`}>{account.status}</span></td><td className="px-4 py-4 text-xs font-bold">{account.remaining}</td><td className="px-5 py-4 text-right"><button className="rounded-lg p-2 text-slate-400 hover:bg-slate-100"><MoreHorizontal size={18}/></button></td></tr>)}</tbody></table></div></section></div>
+      <div className="mt-6 grid gap-6 xl:grid-cols-[.65fr_1.35fr]"><section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="mb-5 flex items-center gap-3"><div className="rounded-xl bg-teal-50 p-3 text-teal-700"><KeyRound size={21}/></div><div><h3 className="font-black">Token aktivasi</h3><p className="text-xs text-slate-400">Buat token sekali pakai.</p></div></div><label className="block"><span className="mb-2 block text-xs font-extrabold">Masa aktif</span><select value={tokenDuration} onChange={(e)=>setTokenDuration(e.target.value)} className="h-12 w-full rounded-xl border border-slate-200 bg-white px-4 text-sm"><option>1 hari</option><option>14 hari</option><option>1 bulan</option></select></label><button onClick={generateToken} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-teal-600 py-3 text-sm font-extrabold text-white"><RefreshCcw size={16}/>Buat token</button>{generatedToken&&<div className="mt-4 rounded-xl bg-slate-950 p-4 text-center"><p className="text-[10px] font-bold text-slate-400">TOKEN · {tokenDuration.toUpperCase()}</p><p className="mt-2 font-mono text-lg font-black tracking-wider text-teal-300">{generatedToken}</p></div>}</section>
+  <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="flex items-center justify-between border-b border-slate-100 p-5"><div><h3 className="font-black">Akun sekolah</h3><p className="mt-1 text-xs text-slate-400">Status langganan dan masa berlaku.</p></div><div className="relative hidden sm:block"><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={15}/><input placeholder="Cari akun..." className="h-10 rounded-xl border border-slate-200 pl-9 pr-3 text-xs outline-none"/></div></div><div className="overflow-x-auto"><table className="w-full min-w-[700px]"><thead className="bg-slate-50 text-left text-[10px] uppercase tracking-wider text-slate-400"><tr><th className="px-5 py-3">Guru</th><th className="px-4 py-3">Sekolah</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Sisa aktif</th><th className="px-5 py-3"></th></tr></thead><tbody className="divide-y divide-slate-100">{accounts.map((account)=><tr key={account.email}><td className="px-5 py-4"><p className="text-sm font-extrabold">{account.name}</p><p className="text-[10px] text-slate-400">{account.email}</p></td><td className="px-4 py-4 text-xs font-bold text-slate-600">{account.school}</td><td className="px-4 py-4"><span className={`rounded-lg px-2.5 py-1.5 text-xs font-bold ${account.status==='Aktif'?'bg-emerald-50 text-emerald-700':account.status==='Trial'?'bg-amber-50 text-amber-700':'bg-rose-50 text-rose-700'}`}>{account.status}</span></td><td className="px-4 py-4 text-xs font-bold">{account.remaining}</td><td className="px-5 py-4 text-right"><button className="rounded-lg p-2 text-slate-400 hover:bg-slate-100"><MoreHorizontal size={18}/></button></td></tr>)}</tbody></table></div></section></div>
     </div>
   </main>;
 }
 
-function DashboardShell({ user, demo, view, onView, onLogout, students, setStudents, setToast }: { user: User | null; demo: boolean; view: NavKey; onView: (v: NavKey) => void; onLogout: () => void; students: Student[]; setStudents: React.Dispatch<React.SetStateAction<Student[]>>; setToast: (t: Toast) => void }) {
+type HelpGuide = {
+  id: string;
+  title: string;
+  summary: string;
+  menu: string;
+  keywords: string[];
+  icon: typeof HelpCircle;
+  steps: string[];
+  tips?: string[];
+  nav?: NavKey;
+};
+
+const HELP_GUIDES: HelpGuide[] = [
+  { id: "mulai", title: "Mulai menggunakan SMART-ATT", summary: "Urutan paling aman untuk menyiapkan aplikasi sebelum dipakai di kelas.", menu: "Mulai cepat", keywords: ["mulai", "setup", "panduan", "pertama"], icon: HelpCircle, steps: ["Masuk menggunakan email dan password guru. Jika belum memiliki akun, pilih Daftar dan lengkapi profil sekolah.", "Buka Data Akademik untuk mengisi nama sekolah, tahun ajaran, semester, daftar kelas, jam masuk, dan KKM.", "Buka Data Siswa untuk menambahkan siswa manual atau mengimpor CSV.", "Periksa profil guru dan pastikan nomor WhatsApp sekolah sudah benar.", "Siapkan sesi pada Mata Pelajaran, lalu gunakan Scan Absensi saat kelas dimulai."], tips: ["Gunakan tombol bantuan ini kapan saja. Panduan dapat dicari dengan kata seperti ‘UAS’, ‘NIS’, ‘CSV’, atau ‘QR’." ] },
+  { id: "dashboard", title: "Memahami Ringkasan Dashboard", summary: "Membaca kondisi kelas dan menemukan pintasan kerja dari halaman Ringkasan.", menu: "Ringkasan", keywords: ["dashboard", "ringkasan", "beranda", "statistik", "pintasan"], icon: LayoutDashboard, nav: "dashboard", steps: ["Buka Ringkasan dari sidebar atau tombol Beranda di HP.", "Pilih kelas dan periode jika tersedia agar angka yang ditampilkan sesuai konteks.", "Baca kartu statistik untuk melihat jumlah siswa, kehadiran, tugas, dan aktivitas terbaru.", "Gunakan pintasan pada kartu untuk langsung membuka Data Siswa, Scan Absensi, Rekap Absensi, atau Rekap Nilai.", "Jika data baru saja disimpan tetapi belum tampak, tunggu indikator sinkronisasi selesai lalu muat ulang halaman."], tips: ["Dashboard adalah ringkasan; perubahan data tetap dilakukan di menu modul masing-masing."] },
+  { id: "navigasi", title: "Cara berpindah menu", summary: "Membuka menu lain tanpa kehilangan data yang sudah tersimpan.", menu: "Navigasi", keywords: ["pindah", "menu", "sidebar", "mobile", "navigasi"], icon: Menu, steps: ["Di laptop/desktop, gunakan menu di sidebar kiri: Ringkasan, Data Siswa, Scan Absensi, dan menu lainnya.", "Di HP, tekan ikon menu ☰ di kiri atas untuk membuka sidebar. Pilih menu, lalu sidebar akan tertutup otomatis.", "Empat shortcut di bagian bawah HP adalah Beranda, Siswa, Scan, dan Tabungan.", "Jika ingin kembali ke modul sebelumnya, buka bantuan ini lagi atau gunakan menu sidebar. Data yang sudah disimpan di Firestore tetap tersedia setelah berpindah menu."], tips: ["Perpindahan menu hanya mengubah tampilan; proses kamera akan dihentikan ketika Anda meninggalkan Scan Absensi."] },
+  { id: "siswa-tambah", title: "Menambahkan data siswa", summary: "Cara mengisi siswa satu per satu, termasuk NIS, kelas, wali, dan foto.", menu: "Data Siswa", keywords: ["siswa", "tambah", "nis", "nisn", "foto", "wali", "edit", "hapus"], icon: UserPlus, nav: "students", steps: ["Buka menu Data Siswa, lalu tekan Tambah Siswa.", "Isi NIS, NISN, nama lengkap, dan pilih kelas. NIS, NISN, dan nama wajib diisi.", "Isi nama wali dan nomor WhatsApp jika sudah tersedia agar dapat digunakan untuk konfirmasi absensi.", "Pilih foto siswa. Atur crop dan rasio foto, lalu tekan Gunakan hasil crop.", "Tekan Simpan Siswa. Data siswa dan foto akan disimpan ke akun guru yang sedang login.", "Untuk memperbaiki data, pilih siswa lalu tekan Edit, ubah field yang diperlukan, dan simpan kembali.", "Untuk menghapus siswa, gunakan Hapus pada baris siswa dan konfirmasi setelah memastikan siswa yang dipilih benar."], tips: ["Pastikan NIS dan NISN tidak sama dengan siswa lain. Foto sebaiknya jelas, tegak, dan berformat JPG/PNG/WebP.", "Hapus hanya data yang memang tidak diperlukan karena riwayat absensi dan nilai dapat ikut tidak tampil pada daftar aktif."] },
+  { id: "siswa-csv", title: "Import siswa dari CSV", summary: "Memasukkan banyak siswa sekaligus dari Excel/CSV.", menu: "Data Siswa", keywords: ["import", "csv", "excel", "bulk", "banyak siswa", "nis"], icon: Upload, nav: "students", steps: ["Buka Data Siswa dan pilih Import CSV.", "Siapkan file dengan header wajib: NIS, NISN, dan Nama Siswa. Header Kelas, Wali, Nomor WhatsApp, dan Nomor Absen bersifat tambahan.", "Pilih file CSV. Sistem mendeteksi pemisah koma, titik koma, atau tab.", "Periksa jumlah siswa yang terbaca dan jumlah baris yang dilewati. Baris tanpa NIS/NISN/nama atau duplikat akan dilewati.", "Pilih proses simpan/import, lalu tunggu notifikasi selesai sebelum berpindah menu."], tips: ["Simpan file sebagai UTF-8 CSV. Jangan memakai NIS atau NISN yang sama untuk dua siswa."] },
+  { id: "siswa-kartu", title: "Membuat dan mencetak kartu siswa", summary: "Membuat Student ID berisi logo, foto, identitas, dan QR absensi.", menu: "Data Siswa", keywords: ["kartu", "student id", "cetak", "print", "pdf", "barcode", "qr"], icon: Printer, nav: "students", steps: ["Pada Data Siswa, pilih siswa lalu buka Print Preview Student ID. Untuk banyak siswa, gunakan cetak batch.", "Pilih Card with Student Photo atau Card without Student Photo.", "Pilih Single Card atau layout A4 8/10 kartu. Layout 10 kartu menggunakan orientasi portrait agar kartu tidak terpotong.", "Periksa preview: foto berada di kiri, identitas di tengah, dan QR berada di kolom kanan.", "Pilih Download PDF untuk file PDF atau Print Selected/Print All untuk mencetak. Pada dialog printer gunakan ukuran asli/100%, kertas A4, dan margin tidak ada."], tips: ["QR harus tetap utuh dan tidak tertutup tulisan. Potong mengikuti tepi kartu yang siku."] },
+  { id: "siswa-wali", title: "Membuat link data wali", summary: "Mengumpulkan nama wali dan nomor WhatsApp tanpa mengetik satu per satu.", menu: "Data Siswa", keywords: ["wali", "orang tua", "guardian", "link", "whatsapp"], icon: Link2, nav: "students", steps: ["Buka Data Siswa lalu pilih Pendataan Wali Murid.", "Pilih kelas yang ingin dikirimi link, lalu tekan Buat link kelas.", "Salin atau bagikan link tersebut kepada wali melalui WhatsApp.", "Wali memasukkan NIS, memeriksa nama siswa, lalu mengisi nama wali dan nomor WhatsApp.", "Saat guru membuka aplikasi, respons pending akan disinkronkan ke data siswa dan statusnya berubah menjadi diterapkan."], tips: ["Link wali bersifat untuk kelas yang dipilih. Jangan membagikannya di tempat publik jika daftar siswa tidak seharusnya diketahui umum."] },
+  { id: "siswa-pindah", title: "Memindahkan siswa antar kelas/guru", summary: "Alur transfer siswa lama ke kelas atau akun guru tujuan menggunakan QR kartu siswa.", menu: "Data Siswa", keywords: ["pindah siswa", "transfer", "siswa lama", "kelas baru", "guru baru"], icon: ArrowRightLeft, nav: "students", steps: ["Pada akun guru tujuan, buka Data Siswa lalu pilih Pindai siswa lama.", "Minta kartu siswa yang sudah memiliki QR, lalu arahkan kamera ke QR tersebut.", "Periksa identitas siswa yang terbaca dan pilih kelas tujuan.", "Kirim permintaan transfer. Sistem membuat permintaan pending ke akun guru asal.", "Guru asal membuka notifikasi/permintaan transfer dan menyetujui permintaan tersebut.", "Setelah disetujui, data siswa beserta foto dan identitasnya tersedia pada kelas tujuan. Periksa kembali sebelum siswa mengikuti absensi."], tips: ["Jangan membuat siswa baru dengan NIS yang sama sebelum permintaan transfer selesai karena dapat menimbulkan duplikasi.", "Pastikan guru asal dan guru tujuan menggunakan akun sekolah yang benar saat menyetujui transfer."] },
+  { id: "scan", title: "Cara scan QR dan mencatat kehadiran", summary: "Menyiapkan sesi, memindai kartu, memeriksa identitas, lalu menyimpan hadir/terlambat.", menu: "Scan Absensi", keywords: ["scan", "qr", "absen", "hadir", "terlambat", "kamera", "nis"], icon: ScanLine, nav: "scan", steps: ["Buka Scan Absensi, pilih tanggal, jam mulai scan, dan kelas.", "Tekan Siapkan Absensi. Izinkan akses kamera ketika browser meminta izin.", "Arahkan kamera ke QR pada kartu siswa. Jika kamera tidak tersedia, masukkan NIS secara manual.", "Periksa modal hasil scan: nama, NIS, kelas asal, foto, dan status yang akan dicatat.", "Tekan OK untuk menyimpan. Siswa dalam kelas akan masuk ke sesi attendanceSessions akun guru; siswa lintas kelas dicatat sebagai absensi lintas kelas.", "Scan berikutnya dapat dilakukan setelah modal tertutup. Siswa yang sudah tercatat tidak disimpan dua kali."], tips: ["Jika foto tidak muncul, pastikan foto siswa sudah tersimpan di Data Siswa. Jika kamera gagal, gunakan input NIS manual.", "Scan setelah sesi ditutup tetap dapat dilakukan dan akan ditandai terlambat."] },
+  { id: "rekap-absen", title: "Membaca rekap absensi", summary: "Melihat hadir, terlambat, sakit, izin, alpha, dan mengirim konfirmasi wali.", menu: "Rekap Absensi", keywords: ["rekap", "absensi", "hadir", "sakit", "izin", "alpha", "bulanan", "semester"], icon: BarChart3, nav: "attendance", steps: ["Buka Rekap Absensi dan pilih kelas/periode yang ingin dilihat.", "Gunakan pencarian nama atau NIS untuk menemukan siswa tertentu.", "Baca kartu ringkasan untuk jumlah Hadir, Terlambat, Sakit, Izin, dan Belum Absen/Alpha.", "Pada daftar siswa yang belum hadir, tekan Kirim konfirmasi WA jika nomor wali tersedia.", "Wali memilih Sakit atau Izin dan mengisi alasan. Respons akan masuk ke rekap setelah guru membuka aplikasi dan sinkronisasi selesai.", "Gunakan tombol ekspor atau cetak jika ingin membagikan laporan."], tips: ["Alpha berarti belum memiliki status. Setelah wali mengirim alasan, periksa kembali rekap agar status berubah."] },
+  { id: "tabungan", title: "Mencatat Tabungan Siswa", summary: "Menyimpan setoran, penarikan, saldo, dan pembatalan transaksi.", menu: "Tabungan Siswa", keywords: ["tabungan", "setoran", "penarikan", "saldo", "transaksi"], icon: Wallet, nav: "savings", steps: ["Buka Tabungan Siswa dan pilih Setoran atau Penarikan.", "Pilih siswa, masukkan nominal, tanggal, petugas, dan keterangan.", "Untuk penarikan, sistem memeriksa agar nominal tidak melebihi saldo aktif.", "Tekan Simpan transaksi. Data tersimpan sebagai ledger dan saldo dihitung dari transaksi aktif.", "Jika salah, gunakan Batalkan dan isi alasan. Transaksi tidak dihapus permanen; statusnya menjadi void.", "Gunakan Export Excel atau Export PDF untuk laporan."], tips: ["Periksa nama siswa dan nominal sebelum menyimpan. Pembatalan memerlukan alasan minimal tiga karakter."] },
+  { id: "mapel", title: "Mengatur Mata Pelajaran dan sesi", summary: "Menentukan mapel, kelas, dan jam yang sedang diajar.", menu: "Mata Pelajaran", keywords: ["mapel", "mata pelajaran", "kelas", "sesi", "jam"], icon: BookOpen, nav: "subjects", steps: ["Buka Mata Pelajaran.", "Pilih mata pelajaran dan kelas yang sedang diajar.", "Atur jam mulai dan jam selesai sesi.", "Simpan sesi aktif. Sesi ini dipakai sebagai konteks saat membuat tugas dan soal AI.", "Jika pindah mengajar ke kelas/mapel lain, ubah sesi sebelum membuat tugas atau soal baru."], tips: ["Sesi aktif bukan jadwal permanen; ini konteks kerja saat ini. Pengaturan sekolah dan kelas permanen ada di Data Akademik."] },
+  { id: "catatan-pembelajaran", title: "Membuat Catatan Pembelajaran", summary: "Menyimpan catatan setiap selesai satu sesi mata pelajaran tanpa menimpa pertemuan sebelumnya.", menu: "Mata Pelajaran", keywords: ["catatan", "catatan pembelajaran", "ringkasan materi", "jam mengajar", "tindak lanjut", "histori"], icon: FileText, nav: "subjects", steps: ["Buka Mata Pelajaran dan pilih mata pelajaran serta kelas pada Sesi Pembelajaran Aktif.", "Atur jam mulai dan selesai sesuai sesi mengajar, lalu simpan sesi aktif.", "Setelah jam mengajar selesai, tekan Isi catatan sekarang atau Catatan Pembelajaran pada kartu mata pelajaran.", "Isi judul atau materi, catatan pembelajaran, serta tindak lanjut jika diperlukan.", "Tekan Simpan catatan sesi. Catatan disimpan berdasarkan tanggal, mapel, kelas, dan jam mengajar.", "Buka Catatan Pembelajaran kembali untuk melihat histori; pilih salah satu catatan jika perlu memperbaruinya."], tips: ["Setiap tanggal dan jam mengajar mempunyai catatan sendiri, jadi catatan lama tidak tertimpa.", "Periksa mapel, kelas, dan jam aktif sebelum menyimpan."] },
+  { id: "akademik", title: "Mengatur data akademik", summary: "Mengisi sekolah, tahun ajaran, semester, kelas, jam masuk, dan KKM.", menu: "Data Akademik", keywords: ["akademik", "sekolah", "tahun ajaran", "semester", "kkm", "jam masuk"], icon: School, nav: "academic", steps: ["Buka Data Akademik.", "Isi nama sekolah dan tahun ajaran, misalnya 2026/2027.", "Pilih semester Ganjil atau Genap.", "Masukkan daftar kelas dipisahkan koma, misalnya VII A, VII B.", "Atur jam masuk untuk menentukan batas hadir dan terlambat.", "Atur KKM untuk digunakan pada rekap nilai.", "Tekan Simpan data akademik dan tunggu notifikasi berhasil."], tips: ["Kelas di sini menjadi pilihan pada Data Siswa dan Scan Absensi. Gunakan penulisan kelas yang konsisten."] },
+  { id: "tugas", title: "Membuat dan membagikan tugas", summary: "Membuat PR, menyimpan draft, menerbitkan link, dan menonaktifkannya.", menu: "Tugas & PR", keywords: ["tugas", "pr", "deadline", "publish", "link"], icon: FileText, nav: "tasks", steps: ["Pastikan sesi mapel/kelas aktif pada Mata Pelajaran.", "Buka Tugas & PR lalu tekan Tugas Baru.", "Isi mata pelajaran, judul, instruksi/deskripsi, dan deadline.", "Simpan sebagai draft jika belum siap dibagikan.", "Aktifkan Publish untuk membuat public link. Salin link dan kirim kepada siswa.", "Gunakan Unpublish jika link tidak boleh diakses lagi. Perubahan tugas akan memperbarui snapshot publik."], tips: ["Tulis deadline dengan tanggal dan jam yang jelas. Link publik hanya menampilkan instruksi tugas, bukan data privat guru."] },
+  { id: "ujian-manual", title: "Membuat soal dan ulangan manual", summary: "Membuat bank soal, mengatur jadwal, durasi, dan menerbitkan ujian.", menu: "Soal & Ulangan", keywords: ["ujian", "ulangan", "soal", "pilihan ganda", "durasi", "jadwal", "uas"], icon: ClipboardCheck, nav: "exams", steps: ["Buka Soal & Ulangan lalu pilih membuat ulangan/soal manual.", "Isi judul, mata pelajaran, bab, kelas, dan durasi.", "Tambahkan pertanyaan, minimal dua pilihan jawaban, pilih kunci jawaban, dan isi pembahasan jika diperlukan.", "Simpan sebagai draft dan periksa kembali setiap kunci jawaban.", "Atur tanggal/jam mulai dan selesai, lalu Publish.", "Bagikan link ujian. Siswa membuka link, memasukkan NIS, dan mengikuti ujian fullscreen.", "Setelah selesai, buka monitoring untuk melihat attempt, skor, aktivitas, dan reset device lock bila diperlukan."], tips: ["Untuk UAS, gunakan judul yang jelas, atur jadwal yang benar, dan lakukan satu kali uji coba melalui link publik sebelum dibagikan."] },
+  { id: "ujian-ai", title: "Membuat soal dengan bantuan AI", summary: "Membuat prompt, menempel hasil AI, memeriksa kunci, dan menyimpan draft.", menu: "Generator AI", keywords: ["ai", "chatgpt", "gemini", "prompt", "soal", "json", "uas"], icon: Sparkles, nav: "ai", steps: ["Buka Generator AI.", "Pilih mata pelajaran, kelas, bab, jumlah soal, dan jumlah pilihan.", "Tekan Salin prompt, lalu tempel prompt ke ChatGPT, Gemini, atau AI lain.", "Minta output dalam JSON atau format bernomor dengan pilihan A/B/C/D dan Kunci.", "Tempel hasil AI atau pilih file JSON/TXT. Sistem mendukung JSON, blok Markdown, dan teks soal biasa.", "Tekan Baca hasil & simpan. Periksa kunci jawaban dan pembahasan sebelum memakai soal.", "Soal tersimpan sebagai draft di Soal & Ulangan untuk dijadwalkan kemudian."], tips: ["AI dapat keliru. Guru tetap wajib memeriksa fakta, tingkat kesulitan, pilihan jawaban, dan kunci sebelum Publish."] },
+  { id: "nilai", title: "Memasukkan nilai UAS dan nilai manual", summary: "Panduan lengkap untuk nilai UAS/ulangan, tugas, praktik, dan rata-rata.", menu: "Rekap Nilai", keywords: ["nilai", "uas", "uts", "ulangan", "manual", "input", "rata-rata", "kkm"], icon: GraduationCap, nav: "scores", steps: ["Buka Rekap Nilai. Pastikan siswa dan kelas sudah tersedia di Data Siswa.", "Untuk nilai UAS/ulangan, selesaikan dan sinkronkan ujian dari menu Soal & Ulangan. Attempt yang selesai akan masuk otomatis ke rekap.", "Untuk nilai manual seperti tugas, praktik, proyek, sikap, atau UAS yang dikerjakan di luar aplikasi, buka tab Input Nilai.", "Pilih kelas, mata pelajaran, jenis nilai, nama penilaian, siswa, nilai 0–100, dan keterangan opsional.", "Tekan Simpan nilai manual. Nilai akan tampil pada daftar nilai dan perhitungan rata-rata.", "Buka tab Bobot untuk mengaktifkan kategori dan mengatur total bobot tepat 100%.", "Gunakan tab Per Siswa atau Per Mata Pelajaran untuk memeriksa hasil. Gunakan Ekspor Excel atau Cetak PDF bila diperlukan."], tips: ["Jika nilai UAS tidak muncul, pastikan attempt berstatus selesai dan kelas/mata pelajarannya sama dengan filter rekap.", "KKM diambil dari Data Akademik dan menentukan label tuntas/remedial."] },
+  { id: "profil", title: "Mengatur profil dan masa aktif akun", summary: "Memperbarui nama guru, sekolah, WhatsApp, dan mengaktifkan token.", menu: "Profil Guru", keywords: ["profil", "akun", "token", "trial", "masa aktif", "password"], icon: Users, nav: "profile", steps: ["Buka Profil Guru untuk melihat email login dan status paket.", "Perbarui nama guru, nomor WhatsApp, dan sekolah, lalu tekan Simpan profil.", "Jika trial/token habis, masukkan token aktivasi pada area masa aktif akun.", "Token dibuat superadmin dan hanya dapat digunakan sekali sesuai masa berlakunya.", "Untuk lupa password, keluar ke halaman login dan gunakan Lupa password."], tips: ["Jangan membagikan token aktivasi kepada akun lain. Jika status akun belum terbaca, periksa koneksi lalu muat ulang."] },
+];
+
+function HelpCenter({ currentView, onView, onClose }: { currentView: NavKey; onView: (view: NavKey) => void; onClose: () => void }) {
+  const initial = HELP_GUIDES.find((guide) => guide.nav === currentView) ?? HELP_GUIDES[0];
+  const [search, setSearch] = useState("");
+  const [selectedId, setSelectedId] = useState(initial.id);
+  const filtered = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    if (!needle) return HELP_GUIDES;
+    return HELP_GUIDES.filter((guide) => [guide.title, guide.summary, guide.menu, ...guide.keywords, ...guide.steps].join(" ").toLowerCase().includes(needle));
+  }, [search]);
+  const selected = filtered.find((guide) => guide.id === selectedId) ?? filtered[0] ?? null;
+  const selectedIndex = selected ? filtered.findIndex((guide) => guide.id === selected.id) : -1;
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+  function selectGuide(guide: HelpGuide) { setSelectedId(guide.id); }
+  function move(delta: number) { const next = filtered[selectedIndex + delta]; if (next) setSelectedId(next.id); }
+  return <div className="fixed inset-0 z-[140] flex items-end justify-center bg-slate-950/55 p-0 backdrop-blur-sm sm:items-center sm:p-5" role="dialog" aria-modal="true" aria-label="Pusat bantuan SMART-ATT">
+    <div className="flex max-h-[94dvh] w-full max-w-5xl flex-col overflow-hidden rounded-t-3xl bg-white shadow-2xl sm:max-h-[88vh] sm:rounded-3xl">
+      <header className="flex flex-wrap items-center gap-3 border-b border-slate-200 bg-slate-950 px-4 py-4 text-white sm:px-6"><div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-teal-400/15 text-teal-300"><HelpCircle size={21}/></div><div className="min-w-0 flex-1"><p className="text-[10px] font-black uppercase tracking-[0.16em] text-teal-300">Pusat Bantuan</p><h2 className="mt-0.5 text-lg font-black">Cara menggunakan SMART-ATT</h2></div><button onClick={onClose} aria-label="Tutup bantuan" className="grid h-10 w-10 place-items-center rounded-xl bg-white/10 text-slate-300 hover:bg-white/20"><X size={19}/></button><label className="order-5 flex h-11 w-full items-center gap-2 rounded-xl bg-white px-3 text-slate-500 sm:order-none sm:w-72"><Search size={17}/><input autoFocus value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Cari: UAS, CSV, scan..." className="min-w-0 flex-1 bg-transparent text-sm font-semibold text-slate-900 outline-none"/></label></header>
+      <div className="grid min-h-0 flex-1 md:grid-cols-[270px_1fr]">
+        <aside className="hidden min-h-0 overflow-y-auto border-r border-slate-200 bg-slate-50 p-3 md:block">{filtered.map((guide) => { const Icon = guide.icon; return <button key={guide.id} onClick={() => selectGuide(guide)} className={`mb-1 flex w-full items-start gap-2 rounded-xl px-3 py-2.5 text-left ${selected?.id === guide.id ? "bg-teal-600 text-white" : "text-slate-600 hover:bg-white"}`}><Icon size={16} className="mt-0.5 shrink-0"/><span className="min-w-0"><span className="block text-xs font-black">{guide.title}</span><span className={`mt-0.5 block text-[10px] leading-4 ${selected?.id === guide.id ? "text-teal-100" : "text-slate-400"}`}>{guide.menu}</span></span></button>; })}{!filtered.length&&<p className="p-4 text-center text-xs font-bold text-slate-400">Panduan tidak ditemukan.</p>}</aside>
+        <main className="min-h-0 overflow-y-auto p-4 sm:p-7">{selected ? <><div className="mb-5 md:hidden"><label className="mb-2 block text-[10px] font-black uppercase tracking-wider text-slate-400">Pilih panduan</label><select value={selected.id} onChange={(event) => setSelectedId(event.target.value)} className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold">{filtered.map((guide) => <option key={guide.id} value={guide.id}>{guide.menu} · {guide.title}</option>)}</select></div><div className="flex flex-wrap items-start justify-between gap-3"><div><span className="rounded-full bg-teal-50 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider text-teal-700">{selected.menu}</span><h3 className="mt-3 text-2xl font-black tracking-tight text-slate-950">{selected.title}</h3><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">{selected.summary}</p></div>{selected.nav&&<button onClick={() => { if (selected.nav) onView(selected.nav); }} className="flex items-center gap-2 rounded-xl bg-teal-600 px-3.5 py-2.5 text-xs font-black text-white"><selected.icon size={15}/>Buka menu ini</button>}</div><ol className="mt-6 space-y-3">{selected.steps.map((step, index) => <li key={`${selected.id}-${index}`} className="flex gap-3 rounded-2xl border border-slate-200 bg-white p-4"><span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-slate-950 text-xs font-black text-white">{index + 1}</span><p className="text-sm leading-6 text-slate-600">{step}</p></li>)}</ol>{selected.tips?.length&&<section className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4"><p className="text-[10px] font-black uppercase tracking-wider text-amber-700">Catatan penting</p><ul className="mt-2 space-y-2">{selected.tips.map((tip) => <li key={tip} className="text-xs leading-5 text-amber-900">• {tip}</li>)}</ul></section>}{filtered.length>1&&<footer className="mt-7 flex items-center justify-between gap-3 border-t border-slate-100 pt-4"><button disabled={selectedIndex<=0} onClick={() => move(-1)} className="flex items-center gap-2 rounded-xl border border-slate-200 px-4 py-2.5 text-xs font-black text-slate-600 disabled:opacity-30"><ArrowLeft size={15}/>Kembali</button><span className="text-[10px] font-black text-slate-400">{selectedIndex + 1} / {filtered.length}</span><button disabled={selectedIndex<0||selectedIndex>=filtered.length-1} onClick={() => move(1)} className="flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-2.5 text-xs font-black text-white disabled:opacity-30">Berikutnya<ChevronRight size={15}/></button></footer>}</> : <div className="grid min-h-64 place-items-center text-center"><Search className="text-slate-300" size={36}/><p className="mt-3 text-sm font-black text-slate-500">Panduan tidak ditemukan</p><button onClick={() => setSearch("")} className="mt-3 text-xs font-black text-teal-700">Hapus pencarian</button></div>}</main>
+      </div>
+    </div>
+  </div>;
+}
+
+function DashboardShell({ user, demo, view, onView, onLogout, students, setStudents, setToast, activeSession, setActiveSession }: { user: User | null; demo: boolean; view: NavKey; onView: (v: NavKey) => void; onLogout: () => void; students: Student[]; setStudents: React.Dispatch<React.SetStateAction<Student[]>>; setToast: (t: Toast) => void; activeSession: ActiveTeachingSession; setActiveSession: React.Dispatch<React.SetStateAction<ActiveTeachingSession>> }) {
   const [mobileNav, setMobileNav] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [academicHeader, setAcademicHeader] = useState(DEFAULT_ACADEMIC_SETTINGS);
   const title = navGroups.flatMap((group) => group.items).find((item) => item.key === view)?.label ?? "Ringkasan";
   useEffect(() => {
@@ -529,7 +849,7 @@ function DashboardShell({ user, demo, view, onView, onLogout, students, setStude
         <nav className="scrollbar-none flex-1 overflow-y-auto">
           {navGroups.map((group) => <div key={group.label} className="mb-5"><p className="mb-2 px-3 text-[10px] font-black tracking-[.16em] text-slate-400">{group.label}</p>{group.items.map((item) => { const Icon = item.icon; const active = view === item.key; return <button key={item.key} onClick={() => { onView(item.key); setMobileNav(false); }} className={`mb-1 flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-bold transition ${active ? "bg-teal-600 text-white shadow-md shadow-teal-600/15" : "text-slate-600 hover:bg-slate-100 hover:text-slate-950"}`}><Icon size={18} strokeWidth={active ? 2.4 : 1.8} /><span className="flex-1">{item.label}</span>{active && <ChevronRight size={15} />}</button>; })}</div>)}
         </nav>
-        <div className="rounded-2xl bg-slate-950 p-4 text-white"><div className="mb-3 flex items-center justify-between"><span className="rounded-lg bg-teal-400/15 p-2 text-teal-300"><HelpCircle size={18} /></span><span className="rounded-full bg-emerald-400/15 px-2 py-1 text-[9px] font-black text-emerald-300">AKTIF</span></div><p className="text-sm font-extrabold">Butuh bantuan?</p><p className="mt-1 text-[11px] leading-4 text-slate-400">Panduan penggunaan tersedia untuk setiap modul.</p></div>
+        <button onClick={() => setHelpOpen(true)} className="flex w-full items-center gap-3 rounded-xl bg-slate-950 px-3 py-2.5 text-left text-white transition hover:bg-slate-900 focus:outline-none focus:ring-4 focus:ring-teal-500/20" aria-label="Buka pusat bantuan"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-teal-400/15 text-teal-300"><HelpCircle size={18}/></span><span className="min-w-0 flex-1"><span className="flex items-center gap-2"><span className="text-xs font-extrabold">Butuh bantuan?</span><span className="rounded-full bg-emerald-400/15 px-1.5 py-0.5 text-[8px] font-black text-emerald-300">AKTIF</span></span><span className="mt-0.5 block truncate text-[9px] text-slate-400">Cari panduan semua modul</span></span><ChevronRight size={15} className="shrink-0 text-teal-300"/></button>
       </aside>
       <div className="min-w-0 max-w-full overflow-x-clip lg:pl-[270px]">
         <header className="sticky top-0 z-30 flex h-[68px] items-center justify-between border-b border-slate-200/80 bg-white/90 px-3 sm:h-[74px] sm:px-7 backdrop-blur-xl sm:px-7">
@@ -539,19 +859,22 @@ function DashboardShell({ user, demo, view, onView, onLogout, students, setStude
         <main className="mx-auto w-full min-w-0 max-w-[1500px] overflow-x-clip p-3 pb-28 sm:p-7 lg:pb-7">
           {view === "dashboard" && <Overview user={user} demo={demo} students={students} onView={onView} setToast={setToast} />}
           {view === "students" && <StudentsView user={user} demo={demo} students={students} configuredClasses={academicHeader.classNames} setStudents={setStudents} setToast={setToast} />}
-          {view === "scan" && <ScannerViewPro user={user} demo={demo} students={students} configuredClasses={academicHeader.classNames} setToast={setToast} />}
+          {view === "scan" && <ScannerViewPro user={user} demo={demo} students={students} configuredClasses={academicHeader.classNames} schoolName={academicHeader.schoolName} setToast={setToast} />}
           {view === "attendance" && <AttendanceViewPro user={user} demo={demo} students={students} setToast={setToast} />}
-          {view === "tasks" && <TasksView user={user} demo={demo} students={students} setToast={setToast} />}
+          {view === "savings" && <SavingsView user={user} demo={demo} students={students} setToast={setToast} />}
+          {view === "subjects" && <SubjectsView user={user} demo={demo} students={students} configuredClasses={academicHeader.classNames} activeSession={activeSession} setActiveSession={setActiveSession} setToast={setToast} onView={onView} />}
+          {view === "tasks" && <TasksView user={user} demo={demo} students={students} activeSession={activeSession} setToast={setToast} />}
           {view === "exams" && <ExamsViewWithManual user={user} demo={demo} students={students} setToast={setToast} />}
-          {view === "ai" && <AiGeneratorConnected user={user} demo={demo} setToast={setToast} />}
+          {view === "ai" && <AiGeneratorConnected user={user} demo={demo} activeSession={activeSession} setToast={setToast} />}
           {view === "scores" && <ScoresView user={user} demo={demo} students={students} setToast={setToast} />}
           {view === "academic" && <AcademicView user={user} demo={demo} students={students} setToast={setToast} />}
           {view === "profile" && <ProfileProfessional user={user} demo={demo} students={students} setToast={setToast} />}
         </main>
       </div>
       <nav aria-label="Navigasi cepat mobile" className="mobile-bottom-nav fixed inset-x-0 bottom-0 z-40 grid grid-cols-4 border-t border-slate-200 bg-white/95 px-2 pt-2 shadow-[0_-8px_24px_rgba(15,23,42,.08)] backdrop-blur-xl lg:hidden">
-        {[{key:"dashboard" as NavKey,label:"Beranda",icon:Home},{key:"students" as NavKey,label:"Siswa",icon:Users},{key:"scan" as NavKey,label:"Scan",icon:ScanLine},{key:"scores" as NavKey,label:"Nilai",icon:ListChecks}].map((item)=>{const Icon=item.icon;const active=view===item.key;return <button key={item.key} onClick={()=>onView(item.key)} className={`flex min-h-14 flex-col items-center justify-center gap-1 rounded-xl text-[10px] font-extrabold transition ${active?"bg-teal-50 text-teal-700":"text-slate-400"}`}><Icon size={20} strokeWidth={active?2.5:1.8}/><span>{item.label}</span></button>})}
+        {[{key:"dashboard" as NavKey,label:"Beranda",icon:Home},{key:"students" as NavKey,label:"Siswa",icon:Users},{key:"scan" as NavKey,label:"Scan",icon:ScanLine},{key:"savings" as NavKey,label:"Tabungan",icon:Wallet}].map((item)=>{const Icon=item.icon;const active=view===item.key;return <button key={item.key} onClick={()=>onView(item.key)} className={`flex min-h-14 flex-col items-center justify-center gap-1 rounded-xl text-[10px] font-extrabold transition ${active?"bg-teal-50 text-teal-700":"text-slate-400"}`}><Icon size={20} strokeWidth={active?2.5:1.8}/><span>{item.label}</span></button>})}
       </nav>
+      {helpOpen && <HelpCenter currentView={view} onView={onView} onClose={() => setHelpOpen(false)} />}
     </div>
   );
 }
@@ -560,12 +883,198 @@ function SectionHeading({ eyebrow, title, description, action }: { eyebrow?: str
   return <div className="mb-5 flex flex-col gap-4 sm:mb-6 sm:flex-row sm:items-end sm:justify-between"><div className="min-w-0">{eyebrow && <p className="mb-1 text-[10px] font-black uppercase tracking-[.16em] text-teal-600 sm:text-[11px]">{eyebrow}</p>}<h2 className="text-xl font-black tracking-tight text-slate-950 sm:text-2xl">{title}</h2><p className="mt-1 text-sm leading-5 text-slate-500">{description}</p></div>{action&&<div className="section-action w-full sm:w-auto">{action}</div>}</div>;
 }
 
+function SubjectsView({ user, demo, students, configuredClasses, activeSession, setActiveSession, setToast, onView }: { user: User | null; demo: boolean; students: Student[]; configuredClasses: string[]; activeSession: ActiveTeachingSession; setActiveSession: React.Dispatch<React.SetStateAction<ActiveTeachingSession>>; setToast: (toast: Toast) => void; onView: (view: NavKey) => void }) {
+  const [optionalSubjects, setOptionalSubjects] = useState<SubjectRecord[]>(demo ? [
+    { id: "demo-robotics", name: "Robotika", category: "optional", icon: "Bot", color: "#0891b2" },
+    { id: "demo-programming", name: "Pemrograman", category: "optional", icon: "Code", color: "#16a34a" },
+    { id: "demo-photography", name: "Fotografi", category: "optional", icon: "Camera", color: "#db2777" },
+  ] : []);
+  const [draft, setDraft] = useState({ name: "", icon: "BookOpen", color: "#0f766e" });
+  const [editing, setEditing] = useState<SubjectRecord | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [learningNotes, setLearningNotes] = useState<LearningNote[]>(() => {
+    if (!demo) return [];
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const date = learningDateKey(yesterday);
+    return [{ id: learningNoteSessionId(DEFAULT_ACTIVE_SESSION, date), subjectId: DEFAULT_ACTIVE_SESSION.subjectId, subjectName: DEFAULT_ACTIVE_SESSION.subjectName, className: DEFAULT_ACTIVE_SESSION.className, date, day: new Intl.DateTimeFormat("id-ID", { weekday: "long" }).format(yesterday), startTime: DEFAULT_ACTIVE_SESSION.startTime, endTime: DEFAULT_ACTIVE_SESSION.endTime, title: "Penjumlahan pecahan", content: "Sebagian besar siswa memahami materi. Beberapa siswa masih perlu latihan menyamakan penyebut.", followUp: "Latihan tambahan pada pertemuan berikutnya.", createdAtMs: yesterday.getTime(), updatedAtMs: yesterday.getTime() }];
+  });
+  const [notesOpen, setNotesOpen] = useState(false);
+  const [noteClock, setNoteClock] = useState(() => Date.now());
+  const [noteDraft, setNoteDraft] = useState({ id: "", date: "", day: "", subjectId: "", subjectName: "", className: "", startTime: "", endTime: "", title: "", content: "", followUp: "" });
+  const classOptions = useMemo(() => Array.from(new Set([...configuredClasses, ...students.map((student) => student.className)].map((item) => item.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, "id-ID")), [configuredClasses, students]);
+  const subjects = useMemo(() => [...MANDATORY_SUBJECTS, ...optionalSubjects].sort((a, b) => a.category === b.category ? a.name.localeCompare(b.name, "id-ID") : a.category === "mandatory" ? -1 : 1), [optionalSubjects]);
+  const selectedSubject = subjects.find((subject) => subject.id === activeSession.subjectId) ?? subjects[0];
+  const todayNoteDate = learningDateKey(noteClock);
+  const activeNoteId = learningNoteSessionId(activeSession, todayNoteDate);
+  const activeNote = learningNotes.find((note) => note.id === activeNoteId);
+  const noteNow = new Date(noteClock);
+  const currentTime = `${String(noteNow.getHours()).padStart(2, "0")}:${String(noteNow.getMinutes()).padStart(2, "0")}`;
+  const sessionHasEnded = Boolean(activeSession.endTime && currentTime >= activeSession.endTime);
+  const visibleNoteHistory = learningNotes
+    .filter((note) => note.subjectId === activeSession.subjectId && note.className === activeSession.className)
+    .sort((a, b) => (b.date ?? "").localeCompare(a.date ?? "") || b.updatedAtMs - a.updatedAtMs);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNoteClock(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (demo) return;
+    if (!user) { setOptionalSubjects([]); return; }
+    return onSnapshot(collection(db, "users", user.uid, "subjects"), (snapshot) => {
+      const next = snapshot.docs.map((item) => ({ id: item.id, ...item.data(), category: "optional" } as SubjectRecord));
+      next.sort((a, b) => a.name.localeCompare(b.name, "id-ID"));
+      setOptionalSubjects(next);
+    }, () => setToast({ message: "Data mata pelajaran belum dapat dibaca.", tone: "error" }));
+  }, [demo, user, setToast]);
+
+  useEffect(() => {
+    if (demo) return;
+    if (!user) return;
+    return onSnapshot(collection(db, "users", user.uid, "learningNotes"), (snapshot) => {
+      setLearningNotes(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as LearningNote)));
+    }, () => setToast({ message: "Catatan pembelajaran belum dapat dibaca.", tone: "error" }));
+  }, [demo, user, setToast]);
+
+  useEffect(() => {
+    if (!selectedSubject) return;
+    setActiveSession((current) => ({ ...current, subjectId: selectedSubject.id, subjectName: selectedSubject.name, className: current.className || classOptions[0] || DEFAULT_ACTIVE_SESSION.className }));
+  }, [selectedSubject?.id, selectedSubject?.name, classOptions.join("\u0001"), setActiveSession]);
+
+  function resetDraft() { setDraft({ name: "", icon: "BookOpen", color: "#0f766e" }); setEditing(null); }
+
+  async function saveSubject(event: React.FormEvent) {
+    event.preventDefault();
+    const name = draft.name.trim().replace(/\s+/g, " ");
+    if (!name) { setToast({ message: "Nama mata pelajaran wajib diisi.", tone: "error" }); return; }
+    if (MANDATORY_SUBJECTS.some((subject) => subject.name.toLocaleLowerCase("id-ID") === name.toLocaleLowerCase("id-ID") && subject.id !== editing?.id) || optionalSubjects.some((subject) => subject.name.toLocaleLowerCase("id-ID") === name.toLocaleLowerCase("id-ID") && subject.id !== editing?.id)) {
+      setToast({ message: `${name} sudah ada di daftar mata pelajaran.`, tone: "error" }); return;
+    }
+    setSaving(true);
+    try {
+      const payload = { name, icon: draft.icon.trim() || "BookOpen", color: draft.color || "#0f766e", category: "optional", protected: false, updatedAt: serverTimestamp() };
+      if (demo || !user) {
+        if (editing) setOptionalSubjects((items) => items.map((item) => item.id === editing.id ? { ...item, ...payload } as SubjectRecord : item));
+        else setOptionalSubjects((items) => [{ id: crypto.randomUUID(), ...payload } as SubjectRecord, ...items]);
+      } else {
+        const reference = editing ? doc(db, "users", user.uid, "subjects", editing.id) : doc(collection(db, "users", user.uid, "subjects"));
+        await setDoc(reference, { ...payload, ...(!editing ? { createdAt: serverTimestamp() } : {}) }, { merge: true });
+      }
+      resetDraft();
+      setToast({ message: editing ? "Mata pelajaran pilihan diperbarui." : "Mata pelajaran pilihan ditambahkan.", tone: "success" });
+    } catch { setToast({ message: "Mata pelajaran gagal disimpan.", tone: "error" }); }
+    finally { setSaving(false); }
+  }
+
+  async function removeSubject(subject: SubjectRecord) {
+    if (subject.category === "mandatory" || subject.protected) { setToast({ message: "Mata pelajaran wajib tidak dapat dihapus.", tone: "error" }); return; }
+    if (!window.confirm(`Hapus subject ${subject.name}?`)) return;
+    try {
+      if (demo || !user) setOptionalSubjects((items) => items.filter((item) => item.id !== subject.id));
+      else await deleteDoc(doc(db, "users", user.uid, "subjects", subject.id));
+      setToast({ message: "Mata pelajaran pilihan dihapus.", tone: "success" });
+    } catch { setToast({ message: "Mata pelajaran gagal dihapus.", tone: "error" }); }
+  }
+
+  async function saveActiveSession(next: ActiveTeachingSession) {
+    setActiveSession(next);
+    try {
+      if (!demo && user) await setDoc(doc(db, "users", user.uid, "settings", "activeTeachingSession"), { ...next, updatedAt: serverTimestamp() }, { merge: true });
+      setToast({ message: `Sesi Pembelajaran Aktif disetel ke ${next.subjectName} - ${next.className}.`, tone: "success" });
+    } catch { setToast({ message: "Sesi aktif belum dapat disimpan.", tone: "error" }); }
+  }
+
+  function editSubject(subject: SubjectRecord) { if (subject.category === "mandatory") return; setEditing(subject); setDraft({ name: subject.name, icon: subject.icon, color: subject.color }); }
+
+  function openLearningNotes(session = activeSession, selectedNote?: LearningNote) {
+    const now = new Date();
+    const date = selectedNote?.date || learningDateKey(now);
+    const noteSession: ActiveTeachingSession = {
+      subjectId: selectedNote?.subjectId || session.subjectId,
+      subjectName: selectedNote?.subjectName || session.subjectName,
+      className: selectedNote?.className || session.className,
+      startTime: selectedNote?.startTime || session.startTime,
+      endTime: selectedNote?.endTime || session.endTime,
+    };
+    const id = selectedNote?.date ? selectedNote.id : learningNoteSessionId(noteSession, date);
+    const current = selectedNote?.date ? selectedNote : learningNotes.find((note) => note.id === id);
+    setNoteDraft({
+      id,
+      date,
+      day: current?.day || new Intl.DateTimeFormat("id-ID", { weekday: "long" }).format(new Date(`${date}T12:00:00`)),
+      ...noteSession,
+      title: current?.title ?? selectedNote?.title ?? "",
+      content: current?.content ?? selectedNote?.content ?? "",
+      followUp: current?.followUp ?? selectedNote?.followUp ?? "",
+    });
+    setNotesOpen(true);
+  }
+
+  async function openSubjectModule(subject: SubjectRecord, item: { label: string; view: NavKey }) {
+    const nextSession = { ...activeSession, subjectId: subject.id, subjectName: subject.name };
+    await saveActiveSession(nextSession);
+    if (item.label === "Catatan Pembelajaran") openLearningNotes(nextSession);
+    else onView(item.view);
+  }
+
+  async function saveLearningNote(event: React.FormEvent) {
+    event.preventDefault();
+    const title = noteDraft.title.trim();
+    const content = noteDraft.content.trim();
+    if (!title || !content) { setToast({ message: "Judul dan isi catatan wajib diisi.", tone: "error" }); return; }
+    if (!noteDraft.subjectId || !noteDraft.className || !noteDraft.date || !noteDraft.startTime || !noteDraft.endTime) { setToast({ message: "Lengkapi mata pelajaran, kelas, dan jam sesi terlebih dahulu.", tone: "error" }); return; }
+    const existing = learningNotes.find((note) => note.id === noteDraft.id);
+    const now = Date.now();
+    const payload: LearningNote = { id: noteDraft.id, subjectId: noteDraft.subjectId, subjectName: noteDraft.subjectName, className: noteDraft.className, date: noteDraft.date, day: noteDraft.day, startTime: noteDraft.startTime, endTime: noteDraft.endTime, title, content, followUp: noteDraft.followUp.trim(), createdAtMs: existing?.createdAtMs ?? now, updatedAtMs: now };
+    try {
+      if (demo || !user) setLearningNotes((items) => [payload, ...items.filter((item) => item.id !== payload.id)]);
+      else await setDoc(doc(db, "users", user.uid, "learningNotes", payload.id), { ...payload, updatedAt: serverTimestamp(), ...(!existing ? { createdAt: serverTimestamp() } : {}) }, { merge: true });
+      setNotesOpen(false);
+      setToast({ message: "Catatan sesi pembelajaran tersimpan.", tone: "success" });
+    } catch { setToast({ message: "Catatan pembelajaran gagal disimpan.", tone: "error" }); }
+  }
+
+  const learningItems = [
+    { label: "Kuis / Ujian", icon: ClipboardCheck, view: "exams" as NavKey, available: true },
+    { label: "Generator Soal AI", icon: Sparkles, view: "ai" as NavKey, available: true },
+    { label: "Bank Soal", icon: ListChecks, view: "exams" as NavKey, available: true },
+    { label: "Catatan Pembelajaran", icon: FileText, view: "subjects" as NavKey, available: true },
+    { label: "Materi Pembelajaran", icon: BookOpen, view: "subjects" as NavKey, available: false },
+    { label: "Tugas", icon: PencilLine, view: "tasks" as NavKey, available: true },
+    { label: "Nilai Siswa", icon: BarChart3, view: "scores" as NavKey, available: true },
+  ];
+
+  return <>
+    <SectionHeading eyebrow="Kelas Digital" title="Mata Pelajaran" description="Mata pelajaran menjadi pusat kuis, generator soal AI, catatan pembelajaran, tugas, dan rekap nilai." action={<button onClick={() => void saveActiveSession({ ...activeSession, subjectId: selectedSubject?.id ?? activeSession.subjectId, subjectName: selectedSubject?.name ?? activeSession.subjectName })} className="flex items-center gap-2 rounded-xl bg-teal-600 px-4 py-2.5 text-xs font-extrabold text-white"><CheckCircle2 size={16}/>Simpan Sesi Pembelajaran Aktif</button>} />
+    <section className={`mb-6 flex flex-col gap-3 rounded-2xl border p-4 sm:flex-row sm:items-center sm:justify-between ${activeNote ? "border-emerald-200 bg-emerald-50" : sessionHasEnded ? "border-amber-200 bg-amber-50" : "border-slate-200 bg-white"}`}>
+      <div className="flex items-start gap-3"><div className={`rounded-xl p-2.5 ${activeNote ? "bg-emerald-100 text-emerald-700" : sessionHasEnded ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-500"}`}><FileText size={18}/></div><div><p className="text-sm font-black">{activeNote ? "Catatan sesi hari ini sudah tersimpan" : sessionHasEnded ? "Jam mengajar selesai, catatan belum dibuat" : "Catatan dapat diisi setelah jam mengajar"}</p><p className="mt-1 text-xs text-slate-500">{activeSession.subjectName} · {activeSession.className} · {activeSession.startTime}–{activeSession.endTime}</p></div></div>
+      <button onClick={() => openLearningNotes()} className={`h-10 shrink-0 rounded-xl px-4 text-xs font-extrabold text-white ${activeNote ? "bg-emerald-600" : sessionHasEnded ? "bg-amber-600" : "bg-slate-950"}`}>{activeNote ? "Lihat catatan" : "Isi catatan sekarang"}</button>
+    </section>
+    <section className="mb-6 overflow-hidden rounded-3xl bg-[#07363b] text-white shadow-xl"><div className="grid gap-5 p-5 lg:grid-cols-[1fr_.85fr] lg:p-6"><div><p className="text-[10px] font-black uppercase tracking-[.18em] text-teal-300">Sesi Pembelajaran Aktif</p><h3 className="mt-2 text-2xl font-black">{activeSession.subjectName}</h3><p className="mt-2 text-sm font-bold text-slate-200">{activeSession.className} · {activeSession.startTime} - {activeSession.endTime}</p><p className="mt-3 max-w-xl text-xs leading-5 text-slate-300">Sesi ini menjadi default saat membuat kuis, generator soal AI, catatan pembelajaran, tugas, dan rekap nilai mata pelajaran.</p></div><div className="grid gap-3 sm:grid-cols-2"><label><span className="mb-1.5 block text-[10px] font-black uppercase text-teal-200">Mata Pelajaran</span><select value={activeSession.subjectId} onChange={(event) => { const subject = subjects.find((item) => item.id === event.target.value); if (subject) void saveActiveSession({ ...activeSession, subjectId: subject.id, subjectName: subject.name }); }} className="h-11 w-full rounded-xl border border-white/15 bg-white/10 px-3 text-xs font-black text-white outline-none"><option className="text-slate-950" value="">Pilih mata pelajaran</option>{subjects.map((subject) => <option className="text-slate-950" key={subject.id} value={subject.id}>{subject.name}</option>)}</select></label><label><span className="mb-1.5 block text-[10px] font-black uppercase text-teal-200">Kelas</span><select value={activeSession.className} onChange={(event) => void saveActiveSession({ ...activeSession, className: event.target.value })} className="h-11 w-full rounded-xl border border-white/15 bg-white/10 px-3 text-xs font-black text-white outline-none">{(classOptions.length ? classOptions : [activeSession.className]).map((item) => <option className="text-slate-950" key={item}>{item}</option>)}</select></label><Field label="Mulai" type="time" value={activeSession.startTime} onChange={(value) => setActiveSession({ ...activeSession, startTime: value })}/><Field label="Selesai" type="time" value={activeSession.endTime} onChange={(value) => setActiveSession({ ...activeSession, endTime: value })}/></div></div></section>
+    <div className="grid gap-6 xl:grid-cols-[1fr_.8fr]"><section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="mb-4 flex items-center justify-between gap-3"><div><h3 className="font-black">Daftar mata pelajaran</h3><p className="mt-1 text-xs text-slate-500">Mata pelajaran wajib dikunci; mata pelajaran pilihan dapat diatur guru.</p></div><span className="rounded-xl bg-teal-50 px-3 py-2 text-xs font-black text-teal-700">{subjects.length} mata pelajaran</span></div><div className="grid gap-3 md:grid-cols-2">{subjects.map((subject) => <article key={subject.id} className="rounded-2xl border border-slate-200 p-4"><div className="flex items-start justify-between gap-3"><div className="flex gap-3"><div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-white shadow-sm" style={{ backgroundColor: subject.color }}><BookOpen size={19}/></div><div><p className="font-black">{subject.name}</p><p className="mt-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">{subject.category === "mandatory" ? "Mata Pelajaran Wajib" : "Mata Pelajaran Pilihan"}</p></div></div><div className="flex gap-1">{subject.category === "optional" && <><button onClick={() => editSubject(subject)} className="rounded-lg bg-sky-50 p-2 text-sky-700"><PencilLine size={14}/></button><button onClick={() => void removeSubject(subject)} className="rounded-lg bg-rose-50 p-2 text-rose-700"><Trash2 size={14}/></button></>}</div></div><div className="mt-4 grid grid-cols-2 gap-2">{learningItems.slice(0, 4).map((item) => { const Icon = item.icon; return <button key={item.label} onClick={() => void openSubjectModule(subject, item)} className="flex items-center gap-2 rounded-xl bg-slate-50 px-3 py-2 text-left text-[10px] font-black text-slate-600"><Icon size={14}/>{item.label}</button>; })}</div></article>)}</div></section><section className="space-y-5"><form onSubmit={saveSubject} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h3 className="font-black">{editing ? "Edit mata pelajaran pilihan" : "Mata pelajaran pilihan baru"}</h3><div className="mt-4 space-y-3"><Field label="Nama mata pelajaran" value={draft.name} onChange={(value) => setDraft({ ...draft, name: value })} placeholder="Robotika, Pemrograman, Bahasa Jepang"/><div className="grid grid-cols-[1fr_88px] gap-3"><Field label="Label ikon" value={draft.icon} onChange={(value) => setDraft({ ...draft, icon: value })}/><label className="block"><span className="mb-2 block text-xs font-extrabold text-slate-700">Warna</span><input type="color" value={draft.color} onChange={(event) => setDraft({ ...draft, color: event.target.value })} className="h-12 w-full rounded-xl border border-slate-200 bg-white p-1"/></label></div><div className="flex gap-2"><button disabled={saving} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-teal-600 py-3 text-xs font-extrabold text-white disabled:opacity-60">{saving ? <Loader2 className="animate-spin" size={15}/> : <Plus size={15}/>}Simpan mata pelajaran</button>{editing && <button type="button" onClick={resetDraft} className="rounded-xl border border-slate-200 px-4 text-xs font-black text-slate-600">Batal</button>}</div></div></form><section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h3 className="font-black">Struktur pembelajaran</h3><div className="mt-4 grid gap-2">{learningItems.map((item) => { const Icon = item.icon; return <button key={item.label} onClick={() => item.label === "Catatan Pembelajaran" ? openLearningNotes() : item.available && onView(item.view)} disabled={!item.available} className="flex items-center justify-between rounded-xl border border-slate-100 px-3 py-3 text-left text-xs font-black text-slate-700 disabled:opacity-45"><span className="flex items-center gap-2"><Icon size={15} className="text-teal-600"/>{item.label}</span><ChevronRight size={14}/></button>; })}</div></section></section></div>
+    {notesOpen && <Modal title="Catatan Pembelajaran" subtitle={`${noteDraft.subjectName} · ${noteDraft.className}`} onClose={() => setNotesOpen(false)}>
+      <div className="grid gap-5 lg:grid-cols-[1fr_.72fr]">
+        <form onSubmit={saveLearningNote} className="space-y-4">
+          <div className="grid grid-cols-2 gap-2 rounded-2xl bg-teal-50 p-3 text-xs text-teal-900 sm:grid-cols-4"><div><p className="text-[9px] font-black uppercase text-teal-600">Tanggal</p><p className="mt-1 font-extrabold">{new Intl.DateTimeFormat("id-ID", { day: "numeric", month: "short", year: "numeric" }).format(new Date(`${noteDraft.date}T12:00:00`))}</p></div><div><p className="text-[9px] font-black uppercase text-teal-600">Hari</p><p className="mt-1 font-extrabold">{noteDraft.day}</p></div><div><p className="text-[9px] font-black uppercase text-teal-600">Mata Pelajaran</p><p className="mt-1 truncate font-extrabold">{noteDraft.subjectName}</p></div><div><p className="text-[9px] font-black uppercase text-teal-600">Jam</p><p className="mt-1 font-extrabold">{noteDraft.startTime}–{noteDraft.endTime}</p></div></div>
+          <Field label="Judul / materi pembelajaran" value={noteDraft.title} onChange={(value) => setNoteDraft((current) => ({ ...current, title: value }))} placeholder="Contoh: Penjumlahan Pecahan Campuran" required/>
+          <label className="block"><span className="mb-2 block text-xs font-extrabold text-slate-700">Catatan pembelajaran</span><textarea value={noteDraft.content} onChange={(event) => setNoteDraft((current) => ({ ...current, content: event.target.value }))} placeholder="Tuliskan jalannya pembelajaran, pemahaman siswa, kendala, atau tugas yang diberikan..." className="min-h-40 w-full rounded-xl border border-slate-200 bg-white p-3 text-sm leading-6 outline-none focus:border-teal-500" required/></label>
+          <label className="block"><span className="mb-2 block text-xs font-extrabold text-slate-700">Tindak lanjut <span className="font-medium text-slate-400">(opsional)</span></span><textarea value={noteDraft.followUp} onChange={(event) => setNoteDraft((current) => ({ ...current, followUp: event.target.value }))} placeholder="Contoh: Remedial hari Rabu atau latihan tambahan." className="min-h-24 w-full rounded-xl border border-slate-200 bg-white p-3 text-sm leading-6 outline-none focus:border-teal-500"/></label>
+          <div className="flex flex-col gap-3 rounded-xl bg-slate-50 p-3 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between"><span>Satu tanggal dan jam mengajar tersimpan sebagai satu catatan sesi.</span><button type="submit" className="shrink-0 rounded-xl bg-teal-600 px-4 py-3 text-xs font-extrabold text-white"><Check size={15} className="mr-1 inline"/>Simpan catatan sesi</button></div>
+        </form>
+        <aside className="min-h-0 rounded-2xl border border-slate-200 bg-slate-50 p-3"><div className="mb-3 flex items-center justify-between gap-2"><div><p className="text-xs font-black">Histori sesi</p><p className="mt-0.5 text-[10px] text-slate-400">{activeSession.subjectName} · {activeSession.className}</p></div><span className="rounded-lg bg-white px-2 py-1 text-[10px] font-black text-slate-500">{visibleNoteHistory.length}</span></div><div className="max-h-80 space-y-2 overflow-y-auto pr-1">{visibleNoteHistory.map((note) => <button type="button" key={note.id} onClick={() => openLearningNotes(activeSession, note)} className={`w-full rounded-xl border p-3 text-left ${noteDraft.id === note.id ? "border-teal-500 bg-white shadow-sm" : "border-slate-200 bg-white/70"}`}><div className="flex items-start justify-between gap-2"><p className="line-clamp-2 text-xs font-black text-slate-800">{note.title}</p><ChevronRight size={14} className="shrink-0 text-slate-400"/></div><p className="mt-2 text-[10px] font-bold text-teal-700">{note.date ? new Intl.DateTimeFormat("id-ID", { day: "numeric", month: "short", year: "numeric" }).format(new Date(`${note.date}T12:00:00`)) : "Catatan lama"}{note.startTime ? ` · ${note.startTime}–${note.endTime}` : ""}</p><p className="mt-1 line-clamp-2 text-[10px] leading-4 text-slate-400">{note.content}</p></button>)}{!visibleNoteHistory.length && <div className="rounded-xl border border-dashed border-slate-300 px-3 py-8 text-center text-xs text-slate-400">Belum ada histori catatan untuk mapel dan kelas ini.</div>}</div></aside>
+      </div>
+    </Modal>}
+  </>;
+}
+
 function StatCard({ label, value, note, icon: Icon, tone }: { label: string; value: string; note: string; icon: typeof Users; tone: string }) {
   return <div className="group rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg"><div className="flex items-start justify-between"><div><p className="text-xs font-bold text-slate-500">{label}</p><p className="mt-2 text-3xl font-black tracking-tight text-slate-950">{value}</p></div><div className={`rounded-2xl p-3 ${tone}`}><Icon size={21} /></div></div><p className="mt-4 flex items-center gap-1 text-[11px] font-semibold text-slate-400"><Activity size={13} className="text-emerald-500" />{note}</p></div>;
 }
 
 function Overview({user,demo,students,onView,setToast}:{user:User|null;demo:boolean;students:Student[];onView:(view:NavKey)=>void;setToast:(toast:Toast)=>void}){
-  const [sessions,setSessions]=useState<AttendanceSession[]>([]);
+  const [sessions,setSessions]=useState<AbsensiSession[]>([]);
   const [tasks,setTasks]=useState<TaskRecord[]>(demo?demoTasks:[]);
   const [exams,setExams]=useState<ExamRecord[]>([]);
   const [academic,setAcademic]=useState<AcademicSettings>(DEFAULT_ACADEMIC_SETTINGS);
@@ -576,18 +1085,18 @@ function Overview({user,demo,students,onView,setToast}:{user:User|null;demo:bool
 
   useEffect(()=>{
     if(demo){
-      const demoRecords:Record<string,AttendanceRecord>={
+      const demoRecords:Record<string,AbsensiRecord>={
         "1":{studentId:"1",status:"present",recordedAtMs:Date.now(),source:"manual"},
         "2":{studentId:"2",status:"present",recordedAtMs:Date.now(),source:"qr"},
         "3":{studentId:"3",status:"sick",recordedAtMs:Date.now(),source:"guardian",reason:"Demam"},
       };
-      setSessions([{id:"demo-today",className:"VII A",schoolName:"SMP Harapan Bangsa",status:"open",startedAtMs:Date.now(),records:demoRecords}]);
+      setSessions([{id:"demo-today",className:"V-A",schoolName:"SMP Harapan Bangsa",status:"open",startedAtMs:Date.now(),records:demoRecords}]);
       setTasks(demoTasks);setExams([]);setAcademic(DEFAULT_ACADEMIC_SETTINGS);setTeacherName("Tomi Guru");return;
     }
     if(!user)return;
     const fail=()=>setToast({message:"Sebagian data Ringkasan belum dapat disinkronkan.",tone:"error"});
     const stops=[
-      onSnapshot(collection(db,"users",user.uid,"attendanceSessions"),(snapshot)=>setSessions(snapshot.docs.map((item)=>{const data=item.data() as Omit<AttendanceSession,"id">;return{id:item.id,...data,records:data.records??{}}}).sort((a,b)=>b.startedAtMs-a.startedAtMs)),fail),
+      onSnapshot(collection(db,"users",user.uid,"attendanceSessions"),(snapshot)=>setSessions(snapshot.docs.map((item)=>{const data=item.data() as Omit<AbsensiSession,"id">;return{id:item.id,...data,records:data.records??{}}}).sort((a,b)=>b.startedAtMs-a.startedAtMs)),fail),
       onSnapshot(collection(db,"users",user.uid,"tasks"),(snapshot)=>setTasks(snapshot.docs.map((item)=>({id:item.id,...item.data()} as TaskRecord))),fail),
       onSnapshot(collection(db,"users",user.uid,"exams"),(snapshot)=>setExams(snapshot.docs.map((item)=>({id:item.id,...item.data()} as ExamRecord))),fail),
       onSnapshot(doc(db,"users",user.uid,"settings","academic"),(snapshot)=>{if(snapshot.exists()){const data=snapshot.data() as Partial<AcademicSettings>;setAcademic({schoolName:typeof data.schoolName==="string"?data.schoolName:DEFAULT_ACADEMIC_SETTINGS.schoolName,academicYear:typeof data.academicYear==="string"?data.academicYear:DEFAULT_ACADEMIC_SETTINGS.academicYear,semester:data.semester==="Genap"?"Genap":"Ganjil",classNames:Array.isArray(data.classNames)?data.classNames:DEFAULT_ACADEMIC_SETTINGS.classNames,entryTime:typeof data.entryTime==="string"?data.entryTime:DEFAULT_ACADEMIC_SETTINGS.entryTime,kkm:typeof data.kkm==="number"?data.kkm:DEFAULT_ACADEMIC_SETTINGS.kkm})}},fail),
@@ -608,7 +1117,7 @@ function Overview({user,demo,students,onView,setToast}:{user:User|null;demo:bool
 
   const weekly=Array.from({length:6},(_,offset)=>{
     const date=new Date(now);date.setDate(now.getDate()-(5-offset));date.setHours(0,0,0,0);
-    const latestByClass=new Map<string,AttendanceSession>();
+    const latestByClass=new Map<string,AbsensiSession>();
     sessions.filter((session)=>dateKey(session.startedAtMs)===dateKey(date)).forEach((session)=>{if(!latestByClass.has(session.className))latestByClass.set(session.className,session)});
     const daySessions=Array.from(latestByClass.values());
     const total=daySessions.reduce((sum,session)=>sum+students.filter((student)=>student.className===session.className).length,0);
@@ -624,7 +1133,7 @@ function Overview({user,demo,students,onView,setToast}:{user:User|null;demo:bool
   ].slice(0,3);
 
   return <>
-    <SectionHeading eyebrow="Dashboard Guru" title={greeting+", "+teacherName} description={today+" · "+academic.schoolName} action={<button onClick={()=>onView("scan")} className="flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-3 text-sm font-extrabold text-white shadow-lg shadow-teal-600/20 hover:bg-teal-700"><ScanLine size={18}/>Mulai absensi</button>}/>
+    <SectionHeading eyebrow="Dasbor Guru" title={greeting+", "+teacherName} description={today+" · "+academic.schoolName} action={<button onClick={()=>onView("scan")} className="flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-3 text-sm font-extrabold text-white shadow-lg shadow-teal-600/20 hover:bg-teal-700"><ScanLine size={18}/>Mulai absensi</button>}/>
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
       <StatCard label="Total siswa" value={String(students.length)} note={new Set(students.map((student)=>student.className)).size+" kelas terdaftar"} icon={Users} tone="bg-sky-50 text-sky-600"/>
       <StatCard label="Hadir hari ini" value={String(present)} note={todaySession?(sessionStudents.length?Math.round(present/sessionStudents.length*100)+"% kelas "+todaySession.className:"Kelas belum memiliki siswa"):"Belum ada sesi absensi"} icon={UserCheck} tone="bg-emerald-50 text-emerald-600"/>
@@ -646,7 +1155,7 @@ function Overview({user,demo,students,onView,setToast}:{user:User|null;demo:bool
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="mb-4 flex items-center justify-between"><div><h3 className="font-black">Agenda terdekat</h3><p className="mt-1 text-xs text-slate-400">Tugas dan ujian yang perlu diperhatikan</p></div><button onClick={()=>onView("tasks")} className="text-xs font-bold text-teal-700">Lihat semua</button></div>
         {agenda.length?<div className="space-y-3">{agenda.map((item)=><div key={item.id} className="flex items-center gap-3 rounded-xl border border-slate-100 p-3"><div className={"grid h-12 w-12 shrink-0 place-items-center rounded-xl "+item.tone}><div className="text-center"><p className="text-sm font-black leading-4">{item.day}</p><p className="text-[7px] font-black">{item.month}</p></div></div><div className="min-w-0"><p className="truncate text-sm font-extrabold">{item.title}</p><p className="mt-1 text-xs text-slate-400">{item.meta}</p></div></div>)}</div>:<div className="rounded-xl bg-slate-50 px-4 py-10 text-center"><CalendarDays className="mx-auto text-slate-300" size={28}/><p className="mt-3 text-sm font-bold text-slate-500">Belum ada agenda terdekat</p></div>}
       </section>
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h3 className="mb-4 font-black">Aksi cepat</h3><div className="grid grid-cols-2 gap-3">{[{label:"Tambah siswa",icon:UserPlus,key:"students"},{label:"Buat tugas",icon:PencilLine,key:"tasks"},{label:"Buat ulangan",icon:ClipboardCheck,key:"exams"},{label:"Generate soal AI",icon:Bot,key:"ai"}].map((item)=>{const Icon=item.icon;return <button key={item.label} onClick={()=>onView(item.key as NavKey)} className="group min-h-28 rounded-xl border border-slate-200 p-4 text-left transition hover:border-teal-300 hover:bg-teal-50/40"><Icon size={21} className="mb-3 text-teal-600"/><p className="text-sm font-extrabold">{item.label}</p><p className="mt-1 text-[10px] text-slate-400">Buka modul <ChevronRight className="inline" size={11}/></p></button>})}</div></section>
+      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h3 className="mb-4 font-black">Aksi cepat</h3><div className="grid grid-cols-2 gap-3">{[{label:"Tambah siswa",icon:UserPlus,key:"students"},{label:"Buat tugas",icon:PencilLine,key:"tasks"},{label:"Buat ulangan",icon:ClipboardCheck,key:"exams"},{label:"Buat soal AI",icon:Bot,key:"ai"}].map((item)=>{const Icon=item.icon;return <button key={item.label} onClick={()=>onView(item.key as NavKey)} className="group min-h-28 rounded-xl border border-slate-200 p-4 text-left transition hover:border-teal-300 hover:bg-teal-50/40"><Icon size={21} className="mb-3 text-teal-600"/><p className="text-sm font-extrabold">{item.label}</p><p className="mt-1 text-[10px] text-slate-400">Buka modul <ChevronRight className="inline" size={11}/></p></button>})}</div></section>
     </div>
   </>;
 }
@@ -675,63 +1184,143 @@ function StudentPhotoCropper({file,onApply,setToast}:{file:File;onApply:(thumbna
   return <div className="rounded-2xl border border-teal-200 bg-teal-50 p-4"><div className="flex flex-col gap-4 sm:flex-row"><div className="mx-auto w-40 shrink-0"><canvas ref={canvasRef} className={`w-full rounded-xl bg-slate-200 object-cover shadow-sm ${aspect==="3:4"?"aspect-[3/4]":"aspect-[4/3]"}`}/><p className="mt-2 text-center text-[10px] font-bold text-teal-700">Pratinjau thumbnail {aspect}</p></div><div className="min-w-0 flex-1 space-y-3"><label className="block"><span className="mb-1.5 block text-xs font-extrabold">Rasio crop</span><select value={aspect} onChange={(event)=>setAspect(event.target.value as PhotoAspect)} className="h-10 w-full rounded-xl border border-teal-200 bg-white px-3 text-xs font-bold"><option value="3:4">3:4 · Potret</option><option value="4:3">4:3 · Mendatar</option></select></label><label className="block"><span className="flex justify-between text-[10px] font-bold"><span>Zoom</span><span>{zoom.toFixed(1)}×</span></span><input type="range" min="1" max="3" step="0.05" value={zoom} onChange={(event)=>setZoom(Number(event.target.value))} className="w-full accent-teal-600"/></label><label className="block"><span className="flex justify-between text-[10px] font-bold"><span>Geser horizontal</span><span>{positionX}</span></span><input type="range" min="-100" max="100" value={positionX} onChange={(event)=>setPositionX(Number(event.target.value))} className="w-full accent-teal-600"/></label><label className="block"><span className="flex justify-between text-[10px] font-bold"><span>Geser vertikal</span><span>{positionY}</span></span><input type="range" min="-100" max="100" value={positionY} onChange={(event)=>setPositionY(Number(event.target.value))} className="w-full accent-teal-600"/></label><button type="button" disabled={busy||!image} onClick={()=>void apply()} className="flex w-full items-center justify-center gap-2 rounded-xl bg-teal-600 py-2.5 text-xs font-extrabold text-white disabled:opacity-50">{busy?<Loader2 className="animate-spin" size={15}/>:<Check size={15}/>}Gunakan hasil crop</button></div></div></div>;
 }
 
-function StudentQrCard({student,schoolName,academicYear}:{student:Student;schoolName:string;academicYear:string}){
-  return <article className="student-qr-card relative mx-auto aspect-[85.6/54] w-full max-w-[342px] overflow-hidden rounded-xl border border-slate-300 bg-white text-slate-950 shadow-sm">
-    <div className="absolute inset-y-0 left-0 w-2 bg-gradient-to-b from-teal-500 to-sky-500"/>
-    <div className="flex h-full flex-col p-3 pl-5">
-      <header className="flex items-center gap-2 border-b border-slate-200 pb-2">
-        <img src="/logo.png" alt="Logo SMART-ATT" className="student-qr-logo h-8 w-8 rounded-lg object-cover"/>
-        <div className="min-w-0 flex-1"><p className="text-[11px] font-black tracking-wide">SMART-ATT</p><p className="truncate text-[7px] font-semibold text-slate-500">{schoolName} · Tahun Ajaran {academicYear}</p></div>
-      </header>
-      <div className="flex min-h-0 flex-1 items-center gap-3 pt-2">
-        <QRCodeSVG value={JSON.stringify({app:"SMART-ATT",studentId:student.id,nis:student.nis})} size={112} level="H" includeMargin={false} className="student-qr-code h-[86px] w-[86px] shrink-0"/>
-        <div className="min-w-0 text-left">
-          <p className="text-[7px] font-black uppercase tracking-wider text-teal-600">Kartu QR Siswa</p>
-          <h3 className="mt-1 line-clamp-2 text-[13px] font-black leading-4">{student.name}</h3>
-          <div className="mt-2 space-y-0.5 text-[8px] font-bold text-slate-600"><p>NIS <span className="text-slate-950">{student.nis}</span></p><p>Kelas <span className="text-slate-950">{student.className}</span></p></div>
-        </div>
-      </div>
+function studentQrPayload(student: Student) {
+  return student.id;
+}
+
+function StudentQrCard({student,schoolName,academicYear,user,template="photo",photoSrc=""}:{student:Student;schoolName:string;academicYear:string;user?:User|null;template?:"photo"|"no-photo";photoSrc?:string}){
+  const initials=student.name.split(" ").filter(Boolean).slice(0,2).map((part)=>part[0]).join("").toUpperCase();
+  const withPhoto=template==="photo";
+  return <article className="student-qr-card relative mx-auto aspect-[85.6/54] w-full max-w-[342px] overflow-hidden rounded-none border border-sky-300 bg-white text-slate-950 shadow-[0_18px_45px_rgba(14,116,144,0.18)]">
+    <header className="relative flex h-[52px] items-center gap-2.5 overflow-hidden bg-sky-300 px-3.5 text-sky-950">
+      <div className="absolute -left-10 -top-14 h-24 w-64 rotate-[8deg] rounded-[50%] bg-sky-200/80"/>
+      <div className="absolute -right-16 -top-8 h-20 w-56 -rotate-[10deg] rounded-[50%] bg-sky-400/45"/>
+      <img src="/logo.png" alt="Logo SMART-ATT" className="student-qr-logo relative h-8 w-8 shrink-0 rounded-lg bg-white object-cover p-0.5 shadow-sm"/>
+      <div className="relative min-w-0 flex-1"><p className="truncate text-[9px] font-black uppercase tracking-[0.12em]">{schoolName}</p><p className="mt-0.5 text-[6.5px] font-extrabold uppercase tracking-[0.18em] text-sky-800">SMART-ATT · Kartu Identitas Siswa</p></div>
+    </header>
+    <div className={`grid h-[calc(100%_-_52px)] min-h-0 items-stretch gap-2.5 bg-[linear-gradient(135deg,#ffffff_0%,#f0f9ff_100%)] p-3 ${withPhoto?"grid-cols-[29%_1fr_26%]":"grid-cols-[1fr_27%]"}`}>
+      {withPhoto&&<div className="min-w-0 rounded-none border-2 border-sky-300 bg-sky-50 p-1 shadow-sm">{photoSrc?<img src={photoSrc} alt={"Foto "+student.name} className="h-full min-h-0 w-full rounded-none object-cover"/>:<PrivateStudentPhoto user={user??null} photoKey={student.photoThumbnailKey??student.photoKey} alt={"Foto "+student.name} className="h-full min-h-0 w-full rounded-none object-cover" fallback={<div className="grid h-full min-h-[108px] w-full place-items-center rounded-none bg-gradient-to-br from-sky-100 to-white text-base font-black text-sky-800">{initials||"ID"}</div>}/>}</div>}
+      <section className="min-w-0 overflow-hidden py-0.5 text-left">
+        <p className="text-[7px] font-black uppercase tracking-[0.16em] text-sky-700">Kartu Pelajar</p>
+        <h3 className={`mt-1 line-clamp-2 font-black leading-[1.05] text-slate-950 ${withPhoto?"text-[13px]":"text-[17px]"}`}>{student.name}</h3>
+        <dl className={`mt-2 grid grid-cols-[32px_1fr] gap-x-1.5 gap-y-1 font-bold ${withPhoto?"text-[7px]":"text-[8.5px]"}`}><dt className="uppercase tracking-[0.12em] text-sky-700">NIS</dt><dd className="truncate text-slate-900">{student.nis}</dd><dt className="uppercase tracking-[0.12em] text-sky-700">NISN</dt><dd className="truncate text-slate-900">{student.nisn||"-"}</dd><dt className="uppercase tracking-[0.12em] text-sky-700">Kelas</dt><dd className="truncate text-slate-900">{student.className}</dd></dl>
+        <p className="mt-2 truncate text-[6px] font-extrabold uppercase tracking-[0.13em] text-slate-400">Tahun Ajaran {academicYear}</p>
+      </section>
+      <aside className="flex min-w-0 flex-col items-center justify-center rounded-none border border-sky-200 bg-white p-1.5 shadow-sm">
+        <QRCodeSVG value={studentQrPayload(student)} size={68} level="M" includeMargin={false} className="student-qr-code h-[68px] w-[68px] max-w-full shrink-0"/>
+        <p className="mt-1 text-center text-[5.5px] font-black uppercase tracking-[0.12em] text-sky-800">Scan Absensi</p>
+      </aside>
     </div>
   </article>;
 }
+type TransferDirectoryStudent={ownerUid:string;studentId:string;nis:string;nisn?:string;name:string;className:string;schoolName:string;guardian?:string;phone?:string;photoKey?:string;photoThumbnailKey?:string;photoAspect?:PhotoAspect};
+function parseTransferStudentQr(raw:string){const text=raw.trim().replace(/^\uFEFF/,"");if(!text)return null;try{const parsed=JSON.parse(text) as {app?:unknown;ownerUid?:unknown;uid?:unknown;teacherUid?:unknown;studentId?:unknown;id?:unknown};const ownerUid=String(parsed.ownerUid??parsed.uid??parsed.teacherUid??"").trim();const studentId=String(parsed.studentId??parsed.id??"").trim();const app=String(parsed.app??"").trim().toUpperCase();if(!studentId||(app&&app!=="SMART-ATT"))return null;return{ownerUid,studentId};}catch{return{ownerUid:"",studentId:text};}}function TransferStudentModal({user,classes,schoolName,students,onClose,setToast}:{user:User;classes:string[];schoolName:string;students:Student[];onClose:()=>void;setToast:(toast:Toast)=>void}){
+  const videoRef=useRef<HTMLVideoElement>(null);const streamRef=useRef<MediaStream|null>(null);const timerRef=useRef<ReturnType<typeof setInterval>|null>(null);
+  const [targetClass,setTargetClass]=useState(classes[0]??"");const [found,setFound]=useState<TransferDirectoryStudent|null>(null);const [error,setError]=useState("");const [busy,setBusy]=useState(false);const scanningRef=useRef(false);
+  function stop(){streamRef.current?.getTracks().forEach((track)=>track.stop());streamRef.current=null;if(timerRef.current)clearInterval(timerRef.current);timerRef.current=null;}
+  async function readQr(raw:string){if(scanningRef.current)return;scanningRef.current=true;try{const identity=parseTransferStudentQr(raw);if(!identity)throw new Error("QR bukan kartu SMART-ATT terbaru. Arahkan kamera ke QR siswa yang besar, bukan logo.");const {ownerUid,studentId}=identity;if(ownerUid&&ownerUid===user.uid)throw new Error("Siswa sudah berada di akun ini. Gunakan Edit Siswa untuk mengganti kelas.");let snapshot=await getDoc(doc(db,"studentDirectory",studentId));if(!snapshot.exists()&&ownerUid)snapshot=await getDoc(doc(db,"studentDirectory",`${ownerUid}__${studentId}`));if(!snapshot.exists())throw new Error("Data asal belum tersedia. Guru lama perlu membuka Data Siswa terlebih dahulu.");const data=snapshot.data();const sourceOwnerUid=String(data.ownerUid||ownerUid);if(sourceOwnerUid===user.uid)throw new Error("Siswa sudah berada di akun ini. Gunakan Edit Siswa untuk mengganti kelas.");const student:TransferDirectoryStudent={ownerUid:sourceOwnerUid,studentId:String(data.studentId||studentId),nis:String(data.nis),nisn:typeof data.nisn==="string"?data.nisn:"",name:String(data.name),className:String(data.className),schoolName:String(data.schoolName||"Sekolah"),guardian:typeof data.guardian==="string"?data.guardian:"",phone:typeof data.phone==="string"?data.phone:"",photoKey:typeof data.photoKey==="string"?data.photoKey:"",photoThumbnailKey:typeof data.photoThumbnailKey==="string"?data.photoThumbnailKey:"",photoAspect:data.photoAspect==="4:3"?"4:3":"3:4"};if(students.some((item)=>item.nis===student.nis||Boolean(student.nisn&&item.nisn===student.nisn)))throw new Error(`NIS/NISN ${student.nis} sudah ada di Data Siswa akun ini.`);setFound(student);setError("");stop();}catch(value){setError(value instanceof Error?value.message:"QR tidak dapat dibaca.");setTimeout(()=>{scanningRef.current=false},1200);}}
+  async function start(){try{const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}},audio:false});streamRef.current=stream;if(videoRef.current){videoRef.current.srcObject=stream;await videoRef.current.play()}const Detector=(window as unknown as {BarcodeDetector?:new(options:{formats:string[]})=>{detect(source:HTMLVideoElement):Promise<{rawValue:string}[]>}}).BarcodeDetector;if(!Detector){setError("Browser belum mendukung pemindai QR. Gunakan Chrome terbaru di HP.");return;}const detector=new Detector({formats:["qr_code"]});timerRef.current=setInterval(async()=>{if(!videoRef.current||scanningRef.current||videoRef.current.readyState<2)return;const codes=await detector.detect(videoRef.current).catch(()=>[]);const valid=codes.find((code)=>code.rawValue&&parseTransferStudentQr(code.rawValue));if(valid?.rawValue){void readQr(valid.rawValue);return;}if(codes.length>0)setError("QR pada logo atau objek lain terbaca. Arahkan kamera ke QR siswa yang besar.");},450);}catch{setError("Kamera tidak dapat dibuka. Izinkan akses kamera pada browser.");}}
+  useEffect(()=>{void start();return()=>stop()},[]);
+  async function transfer(){
+    if(!found||!targetClass||busy)return;
+    setBusy(true);
+    try{
+      const linkId=`${found.ownerUid}__${found.studentId}__${user.uid}`;
+      await setDoc(doc(db,"studentClassLinks",linkId),{sourceOwnerUid:found.ownerUid,sourceStudentId:found.studentId,targetOwnerUid:user.uid,targetStudentId:`${found.ownerUid}__${found.studentId}`,nis:found.nis,studentName:found.name,sourceClassName:found.className,sourceSchoolName:found.schoolName,targetClassName:targetClass,targetSchoolName:schoolName,status:"pending",active:false,requestedAt:serverTimestamp(),requestedBy:user.uid,updatedAt:serverTimestamp()},{merge:true});
+      setToast({message:`Permintaan ${found.name} ke ${targetClass} dikirim. Menunggu persetujuan guru lama.`,tone:"success"});
+      onClose();
+    }catch(value){setError(value instanceof Error?value.message:"Permintaan pendaftaran siswa gagal.");}
+    finally{setBusy(false)}
+  }
+  return <Modal title="Pindai siswa yang sudah terdaftar" subtitle="Scan kartu QR lama, pilih kelas baru, lalu minta persetujuan guru lama." onClose={onClose}><div className="space-y-4">{!found?<div className="relative aspect-[4/3] overflow-hidden rounded-2xl bg-slate-950"><video ref={videoRef} muted playsInline className="h-full w-full object-cover"/><div className="pointer-events-none absolute inset-[15%] rounded-2xl border-2 border-dashed border-teal-300"/><p className="absolute inset-x-3 bottom-3 rounded-xl bg-slate-950/70 px-3 py-2 text-center text-xs font-bold text-white">Arahkan kamera ke kartu QR siswa</p></div>:<div className="rounded-2xl border border-teal-200 bg-teal-50 p-4"><p className="text-[10px] font-black uppercase text-teal-600">Data siswa ditemukan</p><h3 className="mt-1 text-lg font-black">{found.name}</h3><p className="mt-1 text-xs text-teal-800">NIS {found.nis} · {found.className} · {found.schoolName}</p><div className="mt-3 grid grid-cols-2 gap-2 text-xs"><div className="rounded-xl bg-white p-3"><span className="text-slate-400">Wali</span><p className="mt-1 font-black">{found.guardian||"Belum diisi"}</p></div><div className="rounded-xl bg-white p-3"><span className="text-slate-400">WhatsApp</span><p className="mt-1 font-black">{found.phone||"Belum diisi"}</p></div></div></div>}{error&&<p className="rounded-xl bg-rose-50 p-3 text-xs font-bold text-rose-700">{error}</p>}<label className="block"><span className="mb-2 block text-xs font-black">Masukkan ke kelas</span><select value={targetClass} onChange={(event)=>setTargetClass(event.target.value)} className="h-12 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold"><option value="">Pilih kelas tujuan</option>{classes.map((item)=><option key={item}>{item}</option>)}</select></label>{found&&<div className="grid grid-cols-2 gap-3"><button onClick={()=>{setFound(null);scanningRef.current=false;void start()}} className="h-12 rounded-xl border border-slate-200 text-xs font-black">Scan ulang</button><button disabled={busy||!targetClass} onClick={()=>void transfer()} className="flex h-12 items-center justify-center gap-2 rounded-xl bg-teal-600 text-xs font-black text-white disabled:opacity-50">{busy?<Loader2 className="animate-spin" size={16}/>:<CheckCircle2 size={16}/>}Kirim permintaan</button></div>}</div></Modal>
+}
+function whatsappHref(phone:string){const normalized=phone.replace(/\D/g,"").replace(/^0/,"62");return normalized.length>=10?`https://wa.me/${normalized}`:"";}
 function StudentsView({ user, demo, students, configuredClasses, setStudents, setToast }: { user: User | null; demo: boolean; students: Student[]; configuredClasses: string[]; setStudents: React.Dispatch<React.SetStateAction<Student[]>>; setToast: (t: Toast) => void }) {
   const classOptions = Array.from(new Set([...configuredClasses, ...students.map((student) => student.className)].map((item) => item.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, "id-ID"));
   const defaultClass = classOptions[0] ?? "V-A";
-  const emptyForm = { nis: "", name: "", className: defaultClass, guardian: "", phone: "" };
-  const [search, setSearch] = useState(""); const [classFilter, setClassFilter] = useState("Semua kelas"); const [modal, setModal] = useState(false); const [qrStudent, setQrStudent] = useState<Student | null>(null); const [qrBatch, setQrBatch] = useState(false); const [pdfDownloading, setPdfDownloading] = useState(false); const [saving, setSaving] = useState(false);
+  const emptyForm = { nis: "", nisn: "", name: "", className: defaultClass, guardian: "", phone: "" };
+  const [search, setSearch] = useState(""); const [classFilter, setClassFilter] = useState("Semua kelas"); const [modal, setModal] = useState(false); const [transferModal,setTransferModal]=useState(false); const [qrStudent, setQrStudent] = useState<Student | null>(null); const [qrBatch, setQrBatch] = useState(false); const [cardTemplate,setCardTemplate]=useState<"photo"|"no-photo">("photo"); const [printLayout,setPrintLayout]=useState<"single"|"a4-8"|"a4-10"|"a4-12">("a4-8"); const [printOrientation,setPrintOrientation]=useState<"portrait"|"landscape">("portrait"); const [pdfDownloading, setPdfDownloading] = useState(false); const [saving, setSaving] = useState(false);
   const [form, setForm] = useState(emptyForm); const [photo, setPhoto] = useState<File | null>(null); const [thumbnail, setThumbnail] = useState<File | null>(null); const [photoAspect,setPhotoAspect]=useState<PhotoAspect>("3:4"); const [photoProcessing,setPhotoProcessing]=useState(false); const [editingStudent, setEditingStudent] = useState<Student | null>(null);
   const [guardianModal, setGuardianModal] = useState(false); const [guardianClass, setGuardianClass] = useState(defaultClass); const [guardianLink, setGuardianLink] = useState(""); const [publishingLink, setPublishingLink] = useState(false);
   const [schoolName,setSchoolName]=useState(demo?"SMP Harapan Bangsa":"Sekolah");
   const [academicYear,setAcademicYear]=useState("2026/2027");
+  const [crossLocations,setCrossLocations]=useState<Record<string,{scannedClassName:string;scannedSchoolName:string;dateKey:string}>>({});
+  const [sharedClassLocations,setSharedClassLocations]=useState<Record<string,{scannedClassName:string;scannedSchoolName:string;dateKey:string}>>({});
+  const [pendingClassRequests,setPendingClassRequests]=useState<Array<{id:string;studentName:string;nis:string;sourceClassName:string;targetClassName:string;targetSchoolName:string}>>([]);
+  const processingTransferRef=useRef<Record<string,boolean>>({});
+  const directorySyncedRef=useRef(false);
   useEffect(()=>{if(demo){setSchoolName("SMP Harapan Bangsa");setAcademicYear("2026/2027");return;}if(!user)return;void Promise.all([getDoc(doc(db,"users",user.uid)),getDoc(doc(db,"users",user.uid,"settings","academic"))]).then(([profile,academic])=>{const profileSchool=profile.data()?.schoolName;const academicData=academic.data();const academicSchool=academicData?.schoolName;if(typeof academicSchool==="string"&&academicSchool.trim())setSchoolName(academicSchool.trim());else if(typeof profileSchool==="string"&&profileSchool.trim())setSchoolName(profileSchool.trim());if(typeof academicData?.academicYear==="string"&&academicData.academicYear.trim())setAcademicYear(academicData.academicYear.trim());});},[demo,user]);
   useEffect(() => { if (classOptions.length && !classOptions.includes(guardianClass)) setGuardianClass(classOptions[0]); }, [classOptions.join("\u0001"), guardianClass]);
-  const visible = students.filter((s) => (classFilter === "Semua kelas" || s.className === classFilter) && `${s.name} ${s.nis}`.toLowerCase().includes(search.toLowerCase()));
-  function openAddStudent() { setEditingStudent(null); setForm(emptyForm); setPhoto(null); setThumbnail(null); setPhotoAspect("3:4"); setModal(true); }
-  function openEditStudent(student: Student) { setEditingStudent(student); setForm({ nis: student.nis, name: student.name, className: student.className, guardian: student.guardian ?? "", phone: student.phone ?? "" }); setPhoto(null); setThumbnail(null); setPhotoAspect(student.photoAspect??"3:4"); setModal(true); }
+  useEffect(() => {
+    if (!user || demo || !students.length || directorySyncedRef.current || schoolName === "Sekolah") return;
+    directorySyncedRef.current = true;
+    void (async()=>{try{for(let offset=0;offset<students.length;offset+=400){const batch=writeBatch(db);students.slice(offset,offset+400).forEach((student)=>{const directoryPayload={ownerUid:user.uid,studentId:student.id,nis:student.nis,nisn:student.nisn??"",name:student.name,className:student.className,schoolName,guardian:student.guardian??"",phone:student.phone??"",photoKey:student.photoKey??"",photoThumbnailKey:student.photoThumbnailKey??"",photoAspect:student.photoAspect??"3:4",active:true,updatedAt:serverTimestamp()};batch.set(doc(db,"studentDirectory",`${user.uid}__${student.id}`),directoryPayload,{merge:true});batch.set(doc(db,"studentDirectory",student.id),directoryPayload,{merge:true});});await batch.commit();}}catch{directorySyncedRef.current=false;}})();
+  }, [user, demo, students, schoolName]);
+  useEffect(() => {
+    if (!user || demo) { setCrossLocations({}); return; }
+    return onSnapshot(query(collection(db, "crossClassAbsensi"), where("ownerUid", "==", user.uid)), (snapshot) => {
+      const next: Record<string,{scannedClassName:string;scannedSchoolName:string;dateKey:string}> = {};
+      snapshot.docs.sort((a,b)=>Number(b.data().recordedAtMs||0)-Number(a.data().recordedAtMs||0)).forEach((item)=>{const data=item.data();if(!next[String(data.studentId)])next[String(data.studentId)]={scannedClassName:String(data.scannedClassName||"Kelas lain"),scannedSchoolName:String(data.scannedSchoolName||"Sekolah lain"),dateKey:String(data.dateKey||"")};});
+      setCrossLocations(next);
+    });
+  }, [user, demo]);
+  useEffect(() => {
+    if (!user || demo) { setSharedClassLocations({}); setPendingClassRequests([]); return; }
+    return onSnapshot(query(collection(db,"studentClassLinks"),where("sourceOwnerUid","==",user.uid)),(snapshot)=>{
+      const next: Record<string,{scannedClassName:string;scannedSchoolName:string;dateKey:string}> = {};
+      const pending:Array<{id:string;studentName:string;nis:string;sourceClassName:string;targetClassName:string;targetSchoolName:string}> = [];
+      snapshot.docs.forEach((item)=>{const data=item.data();const status=String(data.status||"completed");if(status==="pending"){pending.push({id:item.id,studentName:String(data.studentName||"Siswa"),nis:String(data.nis||"-"),sourceClassName:String(data.sourceClassName||"Kelas ini"),targetClassName:String(data.targetClassName||"Kelas lain"),targetSchoolName:String(data.targetSchoolName||"Sekolah lain")});}if(status==="approved"||status==="completed")next[String(data.sourceStudentId)]={scannedClassName:String(data.targetClassName||"Kelas lain"),scannedSchoolName:String(data.targetSchoolName||"Sekolah lain"),dateKey:""};});
+      setPendingClassRequests(pending);setSharedClassLocations(next);
+    });
+  }, [user, demo]);
+  useEffect(()=>{
+    if(!user||demo)return;
+    return onSnapshot(query(collection(db,"studentClassLinks"),where("targetOwnerUid","==",user.uid)),(snapshot)=>{
+      snapshot.docs.filter((item)=>String(item.data().status||"")==="approved").forEach((item)=>{
+        const link=item.data();if(processingTransferRef.current[item.id])return;processingTransferRef.current[item.id]=true;
+        void (async()=>{try{
+          const targetId=String(link.targetStudentId||`${link.sourceOwnerUid}__${link.sourceStudentId}`);const targetRef=doc(db,"users",user.uid,"students",targetId);const target=await getDoc(targetRef);if(target.exists()){await updateDoc(doc(db,"studentClassLinks",item.id),{status:"completed",active:true,completedAt:serverTimestamp(),updatedAt:serverTimestamp()});return;}
+          const source=await getDoc(doc(db,"studentDirectory",`${link.sourceOwnerUid}__${link.sourceStudentId}`));if(!source.exists())throw new Error("Direktori siswa asal tidak ditemukan.");const data=source.data();const token=await user.getIdToken();
+          async function copyPhoto(sourceKey:string){if(!sourceKey)return "";const response=await fetch("/api/storage/transfer-student-photo",{method:"POST",headers:{Authorization:`Bearer ${token}`,"Content-Type":"application/json"},body:JSON.stringify({sourceOwnerUid:String(link.sourceOwnerUid),sourceKey})});if(!response.ok)throw new Error("Foto siswa gagal disalin dari R2.");return (await response.json() as {key:string}).key;}
+          const [photoKey,photoThumbnailKey]=await Promise.all([copyPhoto(typeof data.photoKey==="string"?data.photoKey:""),copyPhoto(typeof data.photoThumbnailKey==="string"?data.photoThumbnailKey:"")]);const batch=writeBatch(db);const nisn=typeof data.nisn==="string"?data.nisn:"";batch.set(targetRef,{nis:String(data.nis),nisn,name:String(data.name),className:String(link.targetClassName),guardian:typeof data.guardian==="string"?data.guardian:"",phone:typeof data.phone==="string"?data.phone:"",photoKey,photoThumbnailKey,photoAspect:data.photoAspect==="4:3"?"4:3":"3:4",importedFromUid:String(link.sourceOwnerUid),importedFromStudentId:String(link.sourceStudentId),importedFromClassName:String(data.className),importedFromSchoolName:String(data.schoolName||"Sekolah"),createdAt:serverTimestamp(),updatedAt:serverTimestamp()});const directoryPayload={ownerUid:user.uid,studentId:targetId,nis:String(data.nis),nisn,name:String(data.name),className:String(link.targetClassName),schoolName,guardian:typeof data.guardian==="string"?data.guardian:"",phone:typeof data.phone==="string"?data.phone:"",photoKey,photoThumbnailKey,photoAspect:data.photoAspect==="4:3"?"4:3":"3:4",active:true,updatedAt:serverTimestamp()};batch.set(doc(db,"studentDirectory",`${user.uid}__${targetId}`),directoryPayload,{merge:true});batch.set(doc(db,"studentDirectory",targetId),directoryPayload,{merge:true});batch.update(doc(db,"studentClassLinks",item.id),{status:"completed",active:true,completedAt:serverTimestamp(),updatedAt:serverTimestamp()});await batch.commit();setToast({message:`${String(data.name)} disalin ke ${String(link.targetClassName)} setelah disetujui guru lama.`,tone:"success"});
+        }catch(error){setToast({message:error instanceof Error?error.message:"Permintaan siswa belum dapat diselesaikan.",tone:"error"});}finally{delete processingTransferRef.current[item.id];}})();
+      });
+    });
+  },[user,demo,schoolName,setToast]);
+  const otherLocations={...crossLocations,...sharedClassLocations};
+  const visible = students.filter((s) => (classFilter === "Semua kelas" || s.className === classFilter) && `${s.name} ${s.id} ${s.nis} ${s.nisn ?? ""}`.toLowerCase().includes(search.toLowerCase()));
+  async function respondToClassRequest(requestId:string,approved:boolean){
+    if(!user)return;
+    try{await updateDoc(doc(db,"studentClassLinks",requestId),approved?{status:"approved",active:true,approvedBy:user.uid,approvedAt:serverTimestamp(),updatedAt:serverTimestamp()}:{status:"rejected",active:false,rejectedBy:user.uid,rejectedAt:serverTimestamp(),updatedAt:serverTimestamp()});setToast({message:approved?"Permintaan disetujui. Guru baru akan menerima biodata dan foto siswa.":"Permintaan pendaftaran ditolak.",tone:approved?"success":"error"});}catch{setToast({message:"Respons permintaan belum dapat disimpan.",tone:"error"});}
+  }  function openAddStudent() { setEditingStudent(null); setForm(emptyForm); setPhoto(null); setThumbnail(null); setPhotoAspect("3:4"); setModal(true); }
+  function openEditStudent(student: Student) { setEditingStudent(student); setForm({ nis: student.nis, nisn: student.nisn ?? "", name: student.name, className: student.className, guardian: student.guardian ?? "", phone: student.phone ?? "" }); setPhoto(null); setThumbnail(null); setPhotoAspect(student.photoAspect??"3:4"); setModal(true); }
   function closeStudentModal() { setModal(false); setEditingStudent(null); setForm(emptyForm); setPhoto(null); setThumbnail(null); setPhotoProcessing(false); }
   async function choosePhoto(file:File|null){if(!file)return;const supportedType=["image/jpeg","image/png","image/webp"].includes(file.type)||/\.(jpe?g|png|webp)$/i.test(file.name);if(!supportedType){setToast({message:"Gunakan foto JPG, PNG, atau WebP. Kamera HP biasanya menghasilkan JPG.",tone:"error"});return;}if(file.size>15*1024*1024){setToast({message:"Foto awal maksimal 15 MB.",tone:"error"});return;}setPhotoProcessing(true);try{const resized=await resizeStudentPhoto(file);setPhoto(resized);setThumbnail(null);setToast({message:`Foto di-resize menjadi ${Math.ceil(resized.size/1024)} KB. Atur crop thumbnail.`,tone:"success"});}catch(error){setToast({message:error instanceof Error?error.message:"Foto gagal diproses.",tone:"error"});}finally{setPhotoProcessing(false);}}
   async function uploadStudentPhoto(file:File,token:string){const data=new FormData();data.append("file",file);const response=await fetch("/api/storage/photos",{method:"POST",headers:{Authorization:`Bearer ${token}`},body:data});if(!response.ok)throw new Error("Upload foto ke R2 gagal");return (await response.json() as {key:string}).key;}
   async function saveStudent(event: React.FormEvent) {
     event.preventDefault(); setSaving(true);
     try {
+      if(!form.nis.trim()||!form.nisn.trim()||!form.name.trim())throw new Error("Student ID dibuat otomatis. Lengkapi NIS, NISN, dan nama siswa.");
       let photoKey = editingStudent?.photoKey ?? ""; let photoThumbnailKey=editingStudent?.photoThumbnailKey??"";
       if(photo&&!thumbnail)throw new Error("Terapkan crop thumbnail sebelum menyimpan.");
       if (photo && thumbnail && user) {const token=await user.getIdToken();[photoKey,photoThumbnailKey]=await Promise.all([uploadStudentPhoto(photo,token),uploadStudentPhoto(thumbnail,token)]);}
       const payload = { ...form, photoKey, photoThumbnailKey, photoAspect, updatedAt: serverTimestamp() };
-      if (editingStudent) {
-        if (user) await updateDoc(doc(db, "users", user.uid, "students", editingStudent.id), payload);
-        else setStudents((items) => items.map((student) => student.id === editingStudent.id ? { ...student, ...form, photoKey, photoThumbnailKey, photoAspect } : student));
-      } else if (user) {
-        await addDoc(collection(db, "users", user.uid, "students"), { ...payload, createdAt: serverTimestamp() });
-      } else {
-        const local = { ...form, photoKey, photoThumbnailKey, photoAspect, id: crypto.randomUUID() };
-        setStudents((items) => [...items, local].sort((a, b) => a.name.localeCompare(b.name)));
-      }
+      if (user) {
+        const studentRef = editingStudent ? doc(db, "users", user.uid, "students", editingStudent.id) : doc(collection(db, "users", user.uid, "students"));
+        const batch = writeBatch(db);
+        batch.set(studentRef, { ...payload, nis: form.nis.trim(), nisn: form.nisn.trim(), name: form.name.trim(), className: form.className.trim(), ...(!editingStudent ? { createdAt: serverTimestamp() } : {}) }, { merge: true });
+        const directoryPayload = { ownerUid: user.uid, studentId: studentRef.id, nis: form.nis.trim(), nisn: form.nisn.trim(), name: form.name.trim(), className: form.className.trim(), schoolName, guardian: form.guardian.trim(), phone: form.phone.trim(), photoKey, photoThumbnailKey, photoAspect, active: true, updatedAt: serverTimestamp() };
+        batch.set(doc(db, "studentDirectory", `${user.uid}__${studentRef.id}`), directoryPayload, { merge: true });
+        batch.set(doc(db, "studentDirectory", studentRef.id), directoryPayload, { merge: true });
+        await batch.commit();
+      } else if (editingStudent) setStudents((items) => items.map((student) => student.id === editingStudent.id ? { ...student, ...form, photoKey, photoThumbnailKey, photoAspect } : student));
+      else setStudents((items) => [...items, { ...form, photoKey, photoThumbnailKey, photoAspect, id: crypto.randomUUID() }].sort((a, b) => a.name.localeCompare(b.name)));
       closeStudentModal();
-      setToast({ message: editingStudent ? "Data siswa berhasil diperbarui." : demo ? "Siswa ditambahkan dalam mode demo." : "Data siswa tersimpan di Firestore.", tone: "success" });
+      setToast({ message: editingStudent ? "Data siswa dan direktori QR berhasil diperbarui." : demo ? "Siswa ditambahkan dalam mode demo." : "Data siswa tersimpan dan siap dipindai lintas guru.", tone: "success" });
     } catch (err) { setToast({ message: err instanceof Error ? err.message : "Gagal menyimpan siswa.", tone: "error" }); }
     finally { setSaving(false); }
   }
+
   async function publishGuardianLink() {
     const classStudents = students.filter((student) => student.className === guardianClass);
     if (!classStudents.length) { setToast({ message: `Belum ada siswa di kelas ${guardianClass}.`, tone: "error" }); return; }
@@ -745,9 +1334,11 @@ function StudentsView({ user, demo, students, configuredClasses, setStudents, se
         await setDoc(doc(db, "publicSnapshots", snapshotId), {
           type: "guardian",
           ownerUid: user.uid,
+          schoolName,
+          academicYear,
           className: guardianClass,
           published: true,
-          students: classStudents.map((student) => ({ id: student.id, nis: student.nis, name: student.name, className: student.className })),
+          students: classStudents.map((student) => ({ id: student.id, attendanceNumber: student.attendanceNumber ?? "", nis: student.nis, nisn: student.nisn ?? "", name: student.name, className: student.className })),
           updatedAt: serverTimestamp(),
         }, { merge: true });
         setGuardianLink(`${window.location.origin}/public/guardian-data/${snapshotId}`);
@@ -756,7 +1347,7 @@ function StudentsView({ user, demo, students, configuredClasses, setStudents, se
     } catch (error) { setToast({ message: error instanceof Error ? error.message : "Gagal membuat link wali murid.", tone: "error" }); }
     finally { setPublishingLink(false); }
   }
-  async function removeStudent(student: Student) { if (!confirm(`Hapus data ${student.name}?`)) return; if (user) await deleteDoc(doc(db,"users",user.uid,"students",student.id)); else setStudents((items)=>items.filter((s)=>s.id!==student.id)); setToast({message:"Data siswa dihapus.",tone:"success"}); }
+  async function removeStudent(student: Student) { if (!confirm(`Hapus data ${student.name}?`)) return; if (user) { const batch=writeBatch(db); batch.delete(doc(db,"users",user.uid,"students",student.id)); batch.delete(doc(db,"studentDirectory",`${user.uid}__${student.id}`)); batch.delete(doc(db,"studentDirectory",student.id)); await batch.commit(); } else setStudents((items)=>items.filter((s)=>s.id!==student.id)); setToast({message:"Data siswa dihapus.",tone:"success"}); }
   async function importCsv(event: React.ChangeEvent<HTMLInputElement>) {
     const input = event.target;
     const file = input.files?.[0];
@@ -766,6 +1357,9 @@ function StudentsView({ user, demo, students, configuredClasses, setStudents, se
       if (parsed.error) throw new Error(parsed.error);
 
       const existingByNis = new Map(students.map((student) => [student.nis, student]));
+      const existingByNisn = new Map(students.filter((student)=>student.nisn).map((student) => [student.nisn!, student]));
+      const nisnConflict = parsed.students.find((student) => existingByNisn.has(student.nisn) && existingByNisn.get(student.nisn)?.nis !== student.nis);
+      if (nisnConflict) throw new Error(`NISN ${nisnConflict.nisn} sudah digunakan siswa lain.`);
       const newStudents = parsed.students.filter((student) => !existingByNis.has(student.nis));
       const existingUpdates = parsed.students.filter((student) => existingByNis.has(student.nis));
       if (!newStudents.length && !existingUpdates.length) throw new Error("Tidak ada data siswa yang dapat diproses.");
@@ -781,16 +1375,23 @@ function StudentsView({ user, demo, students, configuredClasses, setStudents, se
             if (operation.type === "create") {
               const reference = doc(collection(db, "users", user.uid, "students"));
               batch.set(reference, { ...operation.student, createdAt: serverTimestamp() });
+              const directoryPayload = { ownerUid: user.uid, studentId: reference.id, nis: operation.student.nis, nisn: operation.student.nisn, name: operation.student.name, className: operation.student.className, schoolName, guardian: operation.student.guardian ?? "", phone: operation.student.phone ?? "", photoKey: "", photoThumbnailKey: "", photoAspect: "3:4", active: true, updatedAt: serverTimestamp() };
+              batch.set(doc(db, "studentDirectory", `${user.uid}__${reference.id}`), directoryPayload);
+              batch.set(doc(db, "studentDirectory", reference.id), directoryPayload);
             } else {
               const current = existingByNis.get(operation.student.nis)!;
               batch.set(doc(db, "users", user.uid, "students", current.id), {
                 attendanceNumber: operation.student.attendanceNumber,
+                nisn: operation.student.nisn,
                 name: operation.student.name,
                 className: operation.student.className,
                 ...(operation.student.guardian ? { guardian: operation.student.guardian } : {}),
                 ...(operation.student.phone ? { phone: operation.student.phone } : {}),
                 updatedAt: serverTimestamp(),
               }, { merge: true });
+              const directoryPayload = { ownerUid: user.uid, studentId: current.id, nis: operation.student.nis, nisn: operation.student.nisn, name: operation.student.name, className: operation.student.className, schoolName, guardian: operation.student.guardian ?? "", phone: operation.student.phone ?? "", photoKey: "", photoThumbnailKey: "", photoAspect: "3:4", active: true, updatedAt: serverTimestamp() };
+              batch.set(doc(db, "studentDirectory", `${user.uid}__${current.id}`), directoryPayload, { merge: true });
+              batch.set(doc(db, "studentDirectory", current.id), directoryPayload, { merge: true });
             }
           }
           await batch.commit();
@@ -799,7 +1400,7 @@ function StudentsView({ user, demo, students, configuredClasses, setStudents, se
         const demoRows = newStudents.map((student) => ({ ...student, id: crypto.randomUUID() }));
         setStudents((items) => [...items.map((item) => {
           const update = existingUpdates.find((student) => student.nis === item.nis);
-          return update ? { ...item, attendanceNumber: update.attendanceNumber, name: update.name, className: update.className, ...(update.guardian ? { guardian: update.guardian } : {}), ...(update.phone ? { phone: update.phone } : {}) } : item;
+          return update ? { ...item, attendanceNumber: update.attendanceNumber, nisn: update.nisn, name: update.name, className: update.className, ...(update.guardian ? { guardian: update.guardian } : {}), ...(update.phone ? { phone: update.phone } : {}) } : item;
         }), ...demoRows].sort((a, b) => a.name.localeCompare(b.name)));
       }
 
@@ -813,41 +1414,76 @@ function StudentsView({ user, demo, students, configuredClasses, setStudents, se
       input.value = "";
     }
   }
-  async function downloadQrPdf(){
-    if(!visible.length){setToast({message:"Tidak ada siswa untuk dibuatkan PDF.",tone:"error"});return;}
+  function printQrCards(){
+    const printRoot=document.querySelector<HTMLElement>(".qr-print-root");
+    if(!printRoot){setToast({message:"Pratinjau kartu belum siap dicetak.",tone:"error"});return;}
+    const printWindow=window.open("","_blank");
+    if(!printWindow){setToast({message:"Izinkan pop-up browser untuk mencetak kartu.",tone:"error"});return;}
+    const styles=Array.from(document.querySelectorAll<HTMLLinkElement|HTMLStyleElement>('link[rel="stylesheet"],style')).map((element)=>element.outerHTML).join("\n");
+    const effectiveOrientation=printLayout==="a4-10"?"portrait":printOrientation;
+    const pageSize=printLayout==="single"?"85.6mm 54mm":`A4 ${effectiveOrientation}`;
+    printWindow.opener=null;
+    printWindow.document.open();
+    printWindow.document.write(`<!doctype html><html><head><meta charset="utf-8"><base href="${window.location.origin}/"><title>Cetak Student ID SMART-ATT</title>${styles}<style>@page{size:${pageSize};margin:0}html,body{margin:0!important;background:#fff!important}.qr-print-root{position:static!important}</style></head><body>${printRoot.outerHTML}<script>const images=Array.from(document.images);Promise.all(images.map((image)=>image.complete?Promise.resolve():new Promise((resolve)=>{image.onload=resolve;image.onerror=resolve}))).then(()=>setTimeout(()=>{window.onafterprint=()=>window.close();window.focus();window.print()},300));<\/script></body></html>`);
+    printWindow.document.close();
+  }
+  async function downloadQrPdf(targetStudents=visible,layout=printLayout,orientation=printOrientation){
+    const pdfStudents=targetStudents;
+    if(!pdfStudents.length){setToast({message:"Tidak ada siswa untuk dibuatkan PDF.",tone:"error"});return;}
     setPdfDownloading(true);
     try{
       const {jsPDF}=await import("jspdf");
       const qrElements=Array.from(document.querySelectorAll<SVGSVGElement>(".qr-print-root .student-qr-code"));
-      if(qrElements.length<visible.length)throw new Error("Pratinjau QR belum siap. Tutup lalu buka kembali Cetak Semua QR.");
+      if(qrElements.length<pdfStudents.length)throw new Error("Pratinjau QR belum siap. Tutup lalu buka kembali pratinjau Student ID.");
       const logoData=await fetch("/logo.png").then((response)=>{if(!response.ok)throw new Error("Logo tidak dapat dimuat");return response.blob()}).then((blob)=>new Promise<string>((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result));reader.onerror=()=>reject(new Error("Logo tidak dapat dibaca"));reader.readAsDataURL(blob)}));
-      const qrImages=await Promise.all(qrElements.slice(0,visible.length).map((svg)=>new Promise<string>((resolve,reject)=>{
+      const qrImages=await Promise.all(qrElements.slice(0,pdfStudents.length).map((svg)=>new Promise<string>((resolve,reject)=>{
         const clone=svg.cloneNode(true) as SVGSVGElement;clone.setAttribute("xmlns","http://www.w3.org/2000/svg");clone.setAttribute("width","1024");clone.setAttribute("height","1024");
         const source=new XMLSerializer().serializeToString(clone);const url=URL.createObjectURL(new Blob([source],{type:"image/svg+xml;charset=utf-8"}));const image=new Image();
         image.onload=()=>{try{const canvas=document.createElement("canvas");canvas.width=1024;canvas.height=1024;const context=canvas.getContext("2d");if(!context)throw new Error("Canvas tidak tersedia");context.fillStyle="#ffffff";context.fillRect(0,0,1024,1024);context.drawImage(image,0,0,1024,1024);resolve(canvas.toDataURL("image/png"));}catch(error){reject(error)}finally{URL.revokeObjectURL(url)}};
         image.onerror=()=>{URL.revokeObjectURL(url);reject(new Error("QR tidak dapat dirender"))};image.src=url;
       })));
-      const pdf=new jsPDF({orientation:"portrait",unit:"mm",format:"a4",compress:true});
-      const cardWidth=85.6,cardHeight=54,gapX=8,gapY=6,startX=(210-(cardWidth*2+gapX))/2,startY=18;
-      visible.forEach((student,index)=>{
-        if(index>0&&index%8===0)pdf.addPage("a4","portrait");
-        const pageIndex=index%8,col=pageIndex%2,row=Math.floor(pageIndex/2),x=startX+col*(cardWidth+gapX),y=startY+row*(cardHeight+gapY);
-        pdf.setFillColor(255,255,255);pdf.setDrawColor(148,163,184);pdf.setLineWidth(.3);pdf.roundedRect(x,y,cardWidth,cardHeight,2.5,2.5,"FD");
-        pdf.setFillColor(20,184,166);pdf.roundedRect(x,y,2.5,cardHeight,1.2,1.2,"F");
-        pdf.addImage(logoData,"PNG",x+5,y+3,8,8);
-        pdf.setTextColor(15,23,42);pdf.setFont("helvetica","bold");pdf.setFontSize(9);pdf.text("SMART-ATT",x+15,y+6.5);
-        pdf.setFont("helvetica","normal");pdf.setFontSize(5.5);pdf.setTextColor(100,116,139);
-        const schoolLine=String((pdf.splitTextToSize(schoolName+" - Tahun Ajaran "+academicYear,61) as string[])[0]??"");pdf.text(schoolLine,x+15,y+10.5);
-        pdf.setDrawColor(226,232,240);pdf.line(x+5,y+14,x+cardWidth-5,y+14);
-        pdf.addImage(qrImages[index],"PNG",x+6,y+19,27,27);
-        pdf.setTextColor(13,148,136);pdf.setFont("helvetica","bold");pdf.setFontSize(5.5);pdf.text("KARTU QR SISWA",x+38,y+21.5);
-        pdf.setTextColor(15,23,42);pdf.setFontSize(9);
-        const nameLines=(pdf.splitTextToSize(student.name,41) as string[]).slice(0,2);pdf.text(nameLines,x+38,y+27,{lineHeightFactor:1.05});
-        pdf.setFontSize(6.5);pdf.setTextColor(71,85,105);pdf.text("NIS",x+38,y+40);pdf.setTextColor(15,23,42);pdf.text(student.nis,x+47,y+40);
-        pdf.setTextColor(71,85,105);pdf.text("Kelas",x+38,y+45);pdf.setTextColor(15,23,42);pdf.text(student.className,x+47,y+45);
+      const token=user&&!demo?await user.getIdToken().catch(()=>""):"";
+      const blobToPng=(blob:Blob)=>new Promise<string>((resolve,reject)=>{const url=URL.createObjectURL(blob);const image=new Image();image.onload=()=>{try{const canvas=document.createElement("canvas");canvas.width=480;canvas.height=640;const context=canvas.getContext("2d");if(!context)throw new Error("Canvas tidak tersedia");context.fillStyle="#f8fafc";context.fillRect(0,0,480,640);const scale=Math.max(480/image.naturalWidth,640/image.naturalHeight);const width=image.naturalWidth*scale,height=image.naturalHeight*scale;context.drawImage(image,(480-width)/2,(640-height)/2,width,height);resolve(canvas.toDataURL("image/png"));}catch(error){reject(error)}finally{URL.revokeObjectURL(url)}};image.onerror=()=>{URL.revokeObjectURL(url);reject(new Error("Foto tidak dapat dirender"))};image.src=url;});
+      const includePhoto=cardTemplate==="photo";
+      const photoImages=includePhoto?await Promise.all(pdfStudents.map(async(student)=>{const key=student.photoThumbnailKey??student.photoKey;if(!key||!token)return"";try{const response=await fetch(`/api/storage/file/${encodeURIComponent(key)}`,{headers:{Authorization:`Bearer ${token}`}});if(!response.ok)return"";return await blobToPng(await response.blob());}catch{return"";}})):pdfStudents.map(()=>"");
+      const single=layout==="single";
+      const cardsPerPage=layout==="a4-12"?12:layout==="a4-10"?10:8;
+      const pdf=new jsPDF({orientation:single?"landscape":orientation,unit:"mm",format:single?[85.6,54]:"a4",compress:true});
+      const pageWidth=single?85.6:(orientation==="landscape"?297:210),pageHeight=single?54:(orientation==="landscape"?210:297);
+      const cardWidth=85.6,cardHeight=54;
+      const columns=single?1:(orientation==="landscape"?3:2);
+      const rows=single?1:Math.ceil(cardsPerPage/columns);
+      const gapX=single?0:Math.max(3,(pageWidth-cardWidth*columns-16)/(columns-1||1));
+      const gapY=single?0:Math.max(3,(pageHeight-cardHeight*rows-18)/(rows-1||1));
+      pdfStudents.forEach((student,index)=>{
+        if(single&&index>0)pdf.addPage([85.6,54],"landscape");
+        if(!single&&index>0&&index%cardsPerPage===0)pdf.addPage("a4",orientation);
+        const pageIndex=single?0:index%cardsPerPage,col=single?0:pageIndex%columns,row=single?0:Math.floor(pageIndex/columns);
+        const pageStart=single?index:Math.floor(index/cardsPerPage)*cardsPerPage;
+        const cardsOnPage=single?1:Math.min(cardsPerPage,pdfStudents.length-pageStart);
+        const rowsOnPage=single?1:Math.ceil(cardsOnPage/columns);
+        const cardsOnRow=single?1:Math.min(columns,cardsOnPage-row*columns);
+        const rowStartX=single?0:(pageWidth-(cardWidth*cardsOnRow+gapX*(cardsOnRow-1)))/2;
+        const pageStartY=single?0:(pageHeight-(cardHeight*rowsOnPage+gapY*(rowsOnPage-1)))/2;
+        const x=rowStartX+col*(cardWidth+gapX),y=pageStartY+row*(cardHeight+gapY);
+        pdf.setFillColor(255,255,255);pdf.setDrawColor(125,211,252);pdf.setLineWidth(.3);pdf.rect(x,y,cardWidth,cardHeight,"FD");
+        pdf.setFillColor(125,211,252);pdf.roundedRect(x,y,cardWidth,13.5,4.25,4.25,"F");pdf.rect(x,y+8,cardWidth,5.5,"F");
+        pdf.setFillColor(186,230,253);pdf.ellipse(x+18,y+3,18,5,"F");pdf.setFillColor(56,189,248);pdf.ellipse(x+69,y+3,15,5,"F");
+        pdf.addImage(logoData,"PNG",x+4,y+2.5,8,8);
+        pdf.setTextColor(12,74,110);pdf.setFont("helvetica","bold");pdf.setFontSize(6.2);const schoolLine=String((pdf.splitTextToSize(schoolName.toUpperCase(),60) as string[])[0]??"");pdf.text(schoolLine,x+14,y+5.8);
+        pdf.setTextColor(3,105,161);pdf.setFontSize(4.2);pdf.text("SMART-ATT  ·  KARTU IDENTITAS SISWA",x+14,y+9.1);
+        if(includePhoto){pdf.setFillColor(240,249,255);pdf.setDrawColor(125,211,252);pdf.rect(x+4.5,y+16.5,23,32.5,"FD");if(photoImages[index])pdf.addImage(photoImages[index],"PNG",x+6,y+18,20,29.5);else{pdf.setTextColor(7,89,133);pdf.setFontSize(8);pdf.text(student.name.split(" ").slice(0,2).map((part)=>part[0]).join("").toUpperCase()||"ID",x+16,y+34,{align:"center"});}}
+        const textX=includePhoto?30:5.5,textWidth=includePhoto?31:54;
+        pdf.setTextColor(3,105,161);pdf.setFont("helvetica","bold");pdf.setFontSize(4.7);pdf.text("KARTU PELAJAR",x+textX,y+19);
+        pdf.setTextColor(15,23,42);pdf.setFontSize(includePhoto?8.2:10.5);const nameLines=(pdf.splitTextToSize(student.name,textWidth) as string[]).slice(0,2);pdf.text(nameLines,x+textX,y+24,{lineHeightFactor:1});
+        const detailY=nameLines.length>1?33:30.5;pdf.setFontSize(4.8);pdf.setTextColor(3,105,161);pdf.text("NIS",x+textX,y+detailY);pdf.setTextColor(15,23,42);pdf.text(student.nis,x+textX+9,y+detailY);
+        pdf.setTextColor(3,105,161);pdf.text("NISN",x+textX,y+detailY+4);pdf.setTextColor(15,23,42);pdf.text(student.nisn||"-",x+textX+9,y+detailY+4);
+        pdf.setTextColor(3,105,161);pdf.text("KELAS",x+textX,y+detailY+8);pdf.setTextColor(15,23,42);pdf.text(student.className,x+textX+9,y+detailY+8);
+        pdf.setFontSize(3.7);pdf.setTextColor(100,116,139);pdf.text("TAHUN AJARAN "+academicYear,x+textX,y+49);
+        pdf.setFillColor(255,255,255);pdf.setDrawColor(186,230,253);pdf.rect(x+64,y+21,17.5,27.5,"FD");pdf.addImage(qrImages[index],"PNG",x+65.5,y+25,14.5,14.5);pdf.setTextColor(7,89,133);pdf.setFontSize(3.5);pdf.text("SCAN ABSENSI",x+72.75,y+44,{align:"center"});
       });
-      const suffix=classFilter==="Semua kelas"?"semua-kelas":classFilter.toLowerCase().replace(/[^a-z0-9]+/g,"-");
-      pdf.save("kartu-qr-smart-att-"+suffix+".pdf");setToast({message:"PDF A4 kartu QR berhasil diunduh.",tone:"success"});
+      const suffix=single?`${pdfStudents[0].name}_${pdfStudents[0].nis}`.replace(/[^a-z0-9_-]+/gi,"_"):classFilter==="Semua kelas"?"semua-kelas":classFilter.toLowerCase().replace(/[^a-z0-9]+/g,"-");
+      pdf.save(single?`StudentID_${suffix}.pdf`:"student-id-smart-att-"+suffix+".pdf");setToast({message:single?"PDF Student ID satu halaman berhasil diunduh.":"PDF A4 Student ID berhasil diunduh.",tone:"success"});
     }catch(error){setToast({message:error instanceof Error?error.message:"PDF gagal dibuat.",tone:"error"});}
     finally{setPdfDownloading(false);}
   }
@@ -856,18 +1492,19 @@ function StudentsView({ user, demo, students, configuredClasses, setStudents, se
 <button onClick={()=>{setGuardianLink("");setGuardianModal(true)}} className="flex items-center gap-2 rounded-xl border border-teal-200 bg-teal-50 px-4 py-2.5 text-xs font-extrabold text-teal-700">
 <MessageCircle size={16}/>Link data wali</button>
 <button disabled={!visible.length} onClick={()=>setQrBatch(true)} className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-extrabold text-slate-700 shadow-sm disabled:opacity-40">
-<Printer size={16}/>Cetak semua QR ({visible.length})</button>
+<Printer size={16}/>Cetak Student ID ({visible.length})</button>
 <label title="Mendukung pemisah koma atau titik koma. Header wajib: NIS dan Nama Siswa." className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-extrabold text-slate-700 shadow-sm">
 <Upload size={16}/>Import CSV<input type="file" accept=".csv,text/csv" className="hidden" onChange={importCsv}/>
 </label>
+<button disabled={!user||demo} onClick={()=>setTransferModal(true)} className="flex items-center gap-2 rounded-xl border border-violet-200 bg-violet-50 px-4 py-2.5 text-xs font-extrabold text-violet-700 disabled:opacity-40"><ScanLine size={17}/>Pindai siswa lama</button>
 <button onClick={openAddStudent} className="flex items-center gap-2 rounded-xl bg-teal-600 px-4 py-2.5 text-xs font-extrabold text-white shadow-lg shadow-teal-600/20">
 <Plus size={17}/>Tambah siswa</button>
 </div>} />
-  <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+  {pendingClassRequests.length>0&&<section className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 p-4"><div className="flex items-start gap-3"><div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-amber-200 text-amber-800"><ShieldAlert size={19}/></div><div className="min-w-0 flex-1"><h3 className="font-black text-amber-950">Permintaan pendaftaran siswa</h3><p className="mt-1 text-xs leading-5 text-amber-800">Guru lain meminta mendaftarkan siswa dari kelas Anda. Siswa tetap tersimpan di kelas ini.</p><div className="mt-3 space-y-2">{pendingClassRequests.map((request)=><div key={request.id} className="flex flex-col gap-3 rounded-xl border border-amber-200 bg-white p-3 sm:flex-row sm:items-center sm:justify-between"><div><p className="text-sm font-black text-slate-900">{request.studentName} <span className="text-xs font-bold text-slate-400">· NIS {request.nis}</span></p><p className="mt-1 text-[11px] text-slate-500">{request.sourceClassName} → {request.targetClassName} · {request.targetSchoolName}</p></div><div className="flex shrink-0 gap-2"><button onClick={()=>void respondToClassRequest(request.id,false)} className="rounded-lg border border-rose-200 px-3 py-2 text-[11px] font-black text-rose-700">Tolak</button><button onClick={()=>void respondToClassRequest(request.id,true)} className="rounded-lg bg-teal-600 px-3 py-2 text-[11px] font-black text-white">Setujui</button></div></div>)}</div></div></div></section>}  <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
 <div className="flex flex-col gap-3 border-b border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between">
 <div className="relative w-full max-w-md">
 <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={17}/>
-<input value={search} onChange={(e)=>setSearch(e.target.value)} placeholder="Cari nama atau NIS..." className="h-11 w-full rounded-xl border border-slate-200 pl-10 pr-4 text-sm outline-none focus:border-teal-500"/>
+<input value={search} onChange={(e)=>setSearch(e.target.value)} placeholder="Cari nama, Student ID, NIS, atau NISN..." className="h-11 w-full rounded-xl border border-slate-200 pl-10 pr-4 text-sm outline-none focus:border-teal-500"/>
 </div>
 <div className="flex items-center gap-2">
 <select value={classFilter} onChange={(e)=>setClassFilter(e.target.value)} className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold outline-none">
@@ -880,9 +1517,9 @@ function StudentsView({ user, demo, students, configuredClasses, setStudents, se
   {visible.map((student)=><article key={student.id} className="p-4">
     <div className="flex items-start gap-3">
       <PrivateStudentPhoto user={user} photoKey={student.photoThumbnailKey??student.photoKey} alt={"Foto "+student.name} className="h-14 w-14 shrink-0 rounded-2xl object-cover shadow-sm" fallback={<div className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-teal-100 to-sky-100 text-sm font-black text-teal-700">{student.name.split(" ").slice(0,2).map((part)=>part[0]).join("")}</div>}/>
-      <div className="min-w-0 flex-1"><h3 className="truncate text-sm font-black text-slate-900">{student.name}</h3><p className="mt-1 text-xs font-bold text-slate-500">NIS {student.nis}</p><div className="mt-2 flex flex-wrap gap-2"><span className="rounded-lg bg-sky-50 px-2.5 py-1 text-[10px] font-extrabold text-sky-700">{student.className}</span><span className={"rounded-lg px-2.5 py-1 text-[10px] font-extrabold "+(student.guardian?"bg-emerald-50 text-emerald-700":"bg-amber-50 text-amber-700")}>{student.guardian?"Data lengkap":"Wali belum lengkap"}</span></div></div>
+      <div className="min-w-0 flex-1"><h3 className="truncate text-sm font-black text-slate-900">{student.name}</h3><p className="mt-1 text-xs font-bold text-slate-500">NIS {student.nis}</p><div className="mt-2 flex flex-wrap gap-2"><span className="rounded-lg bg-sky-50 px-2.5 py-1 text-[10px] font-extrabold text-sky-700">{student.className}</span><span className={"rounded-lg px-2.5 py-1 text-[10px] font-extrabold "+(student.guardian?"bg-emerald-50 text-emerald-700":"bg-amber-50 text-amber-700")}>{student.guardian?"Data lengkap":"Wali belum lengkap"}</span>{otherLocations[student.id]&&<span className="rounded-lg bg-violet-50 px-2.5 py-1 text-[10px] font-extrabold text-violet-700">Tercatat juga: {otherLocations[student.id].scannedClassName} · {otherLocations[student.id].scannedSchoolName}</span>}</div></div>
     </div>
-    <div className="mt-3 rounded-xl bg-slate-50 px-3 py-2.5"><p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Orang tua / wali</p><p className="mt-1 text-xs font-bold text-slate-700">{student.guardian||"Belum diisi"} <span className="font-normal text-slate-400">· {student.phone||"No. WA belum ada"}</span></p></div>
+    <div className="mt-3 rounded-xl bg-slate-50 px-3 py-2.5"><p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Orang tua / wali</p><p className="mt-1 text-xs font-bold text-slate-700">{student.guardian||"Belum diisi"} <span className="font-normal text-slate-400">· {student.phone ? (whatsappHref(student.phone) ? <a href={whatsappHref(student.phone)} target="_blank" rel="noreferrer" className="font-black text-emerald-700 underline">WhatsApp</a> : "WhatsApp tidak valid") : "WhatsApp belum ada"}</span></p></div>
     <div className="mt-3 grid grid-cols-3 gap-2">
       <button onClick={()=>setQrStudent(student)} className="flex min-h-11 items-center justify-center gap-1.5 rounded-xl bg-teal-50 text-xs font-extrabold text-teal-700"><QrCode size={16}/>QR</button>
       <button onClick={()=>openEditStudent(student)} className="flex min-h-11 items-center justify-center gap-1.5 rounded-xl bg-sky-50 text-xs font-extrabold text-sky-700"><PencilLine size={16}/>Edit</button>
@@ -895,7 +1532,7 @@ function StudentsView({ user, demo, students, configuredClasses, setStudents, se
 <thead className="bg-slate-50 text-[10px] font-black uppercase tracking-wider text-slate-400">
 <tr>
 <th className="px-5 py-3">Siswa</th>
-<th className="px-4 py-3">NIS</th>
+<th className="px-4 py-3">Identitas</th>
 <th className="px-4 py-3">Kelas</th>
 <th className="px-4 py-3">Wali murid</th>
 <th className="px-4 py-3">Status data</th>
@@ -919,15 +1556,16 @@ function StudentsView({ user, demo, students, configuredClasses, setStudents, se
 </div>
 </div>
 </td>
-<td className="px-4 py-4 text-sm font-black text-slate-700">{student.nis}</td>
+<td className="px-4 py-4"><p className="text-xs font-black text-slate-800">NIS {student.nis}</p><p className="mt-1 text-[10px] font-bold text-slate-500">NISN {student.nisn||"-"}</p></td>
 <td className="px-4 py-4">
 <span className="rounded-lg bg-sky-50 px-2.5 py-1.5 text-xs font-extrabold text-sky-700">{student.className}</span>
 </td>
 <td className="px-4 py-4">
 <p className="text-xs font-bold text-slate-700">{student.guardian||"Belum diisi"}</p>
-<p className="mt-1 text-[10px] text-slate-400">{student.phone||"—"}</p>
+<p className="mt-1 text-[10px] text-slate-400">{student.phone ? (whatsappHref(student.phone) ? <a href={whatsappHref(student.phone)} target="_blank" rel="noreferrer" className="font-black text-emerald-700 underline">WhatsApp</a> : "WhatsApp tidak valid") : "WhatsApp belum ada"}</p>
 </td>
 <td className="px-4 py-4">
+{otherLocations[student.id]&&<p className="mb-1.5 rounded-lg bg-violet-50 px-2 py-1 text-[10px] font-extrabold text-violet-700">Terdaftar juga: {otherLocations[student.id].scannedClassName} · {otherLocations[student.id].scannedSchoolName}</p>}
 <span className={`inline-flex items-center gap-1.5 text-xs font-bold ${student.guardian?"text-emerald-600":"text-amber-600"}`}>
 <span className={`h-1.5 w-1.5 rounded-full ${student.guardian?"bg-emerald-500":"bg-amber-500"}`}/>{student.guardian?"Lengkap":"Perlu dilengkapi"}</span>
 </td>
@@ -950,16 +1588,18 @@ function StudentsView({ user, demo, students, configuredClasses, setStudents, se
 <Users className="mx-auto text-slate-300" size={36}/>
 <p className="mt-3 text-sm font-bold text-slate-500">Siswa tidak ditemukan</p>
 </div>}</section>
+  {transferModal&&user&&<TransferStudentModal user={user} classes={classOptions} schoolName={schoolName} students={students} onClose={()=>setTransferModal(false)} setToast={setToast}/>}
   {modal&&<Modal title={editingStudent?"Edit data siswa":"Tambah siswa baru"} subtitle="Lengkapi identitas siswa dan data wali murid." onClose={closeStudentModal}>
 <form onSubmit={saveStudent} className="space-y-4">
-<Field label="NIS" value={form.nis} onChange={(v)=>setForm({...form,nis:v})} placeholder="Contoh: 20260101" required/>
+<div className="rounded-xl bg-slate-50 p-3 text-[11px] font-bold text-slate-500">Student ID dibuat otomatis oleh SMART-ATT dan menjadi isi QR Code.</div>
+<div className="grid gap-4 sm:grid-cols-2"><Field label="NIS" value={form.nis} onChange={(v)=>setForm({...form,nis:v})} placeholder="Contoh: 20260101" required/><Field label="NISN" value={form.nisn} onChange={(v)=>setForm({...form,nisn:v})} placeholder="Nomor induk nasional" required/></div>
 <Field label="Nama lengkap siswa" value={form.name} onChange={(v)=>setForm({...form,name:v})} placeholder="Nama siswa" required/>
 <label className="block">
 <span className="mb-2 block text-xs font-extrabold text-slate-700">Kelas</span>
 <select value={form.className} onChange={(e)=>setForm({...form,className:e.target.value})} className="h-12 w-full rounded-xl border border-slate-200 bg-white px-4 text-sm outline-none">{classOptions.length?classOptions.map((className)=>
 <option key={className}>{className}</option>):<>
-<option>VII A</option>
-<option>VII B</option>
+<option>V-A</option>
+<option>V-B</option>
 </>}</select>
 </label>
 <div className="grid gap-4 sm:grid-cols-2">
@@ -1001,7 +1641,7 @@ function StudentsView({ user, demo, students, configuredClasses, setStudents, se
 <label className="block">
 <span className="mb-2 block text-xs font-extrabold text-slate-700">Pilih kelas</span>
 <select value={guardianClass} onChange={(e)=>{setGuardianClass(e.target.value);setGuardianLink("")}} className="h-12 w-full rounded-xl border border-slate-200 bg-white px-4 text-sm outline-none">{classOptions.length?classOptions.map((className)=>
-<option key={className}>{className}</option>):<option>VII A</option>}</select>
+<option key={className}>{className}</option>):<option>V-A</option>}</select>
 </label>
 <div className="rounded-xl bg-teal-50 p-4 text-xs leading-5 text-teal-800">
 <MessageCircle className="mr-1 inline" size={15}/>Wali memasukkan NIS. Setelah data cocok, wali mengisi nama serta nomor WhatsApp. Hasilnya otomatis masuk ke data siswa.</div>{guardianLink?<>
@@ -1018,26 +1658,63 @@ function StudentsView({ user, demo, students, configuredClasses, setStudents, se
 <Send size={16}/>Bagikan ke WhatsApp</a>
 </>:<button onClick={publishGuardianLink} disabled={publishingLink} className="flex w-full items-center justify-center gap-2 rounded-xl bg-teal-600 py-3 text-sm font-extrabold text-white disabled:opacity-60">{publishingLink?<Loader2 className="animate-spin" size={17}/>:<Link2 size={17}/>}Buat link kelas</button>}</div>
 </Modal>}
-  {qrStudent&&<Modal title="Kartu QR siswa" subtitle="Standar KTP 85,6 × 54 mm · tanpa foto siswa." onClose={()=>setQrStudent(null)}>
-    <div className="qr-print-root"><div className="qr-print-page rounded-2xl bg-slate-100 p-4"><StudentQrCard student={qrStudent} schoolName={schoolName} academicYear={academicYear}/></div></div>
-    <div className="mt-4 rounded-xl bg-teal-50 px-4 py-3 text-xs leading-5 text-teal-800">Kartu hanya menampilkan logo SMART-ATT, sekolah, tahun ajaran, QR, nama, NIS, dan kelas.</div>
-    <button onClick={()=>window.print()} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-extrabold text-white"><Printer size={17}/>Cetak kartu QR</button>
+  {qrStudent&&<Modal title="Print Preview Student ID" subtitle="Pilih template, layout kertas, dan orientasi sebelum export PDF." onClose={()=>setQrStudent(null)}>
+    <PrintOptions cardTemplate={cardTemplate} setCardTemplate={setCardTemplate} printLayout={printLayout} setPrintLayout={setPrintLayout} printOrientation={printOrientation} setPrintOrientation={setPrintOrientation} selectedCount={1}/>
+    <div className="qr-print-root"><div className={`qr-print-page qr-print-${printLayout} qr-print-${printOrientation} rounded-2xl bg-slate-100 p-4`}><StudentQrCard student={qrStudent} schoolName={schoolName} academicYear={academicYear} user={user} template={cardTemplate}/></div></div>
+    <div className="mt-4 rounded-xl bg-teal-50 px-4 py-3 text-xs leading-5 text-teal-800">Pratinjau ukuran cetak. PDF satu siswa dibuat tepat 1 halaman dengan nama file StudentID_[Nama]_[NIS].pdf.</div>
+    <div className="mt-4 grid gap-2 sm:grid-cols-2"><button disabled={pdfDownloading} onClick={()=>void downloadQrPdf([qrStudent],"single",printOrientation)} className="flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-3 text-sm font-extrabold text-white disabled:opacity-60">{pdfDownloading?<Loader2 className="animate-spin" size={17}/>:<Download size={17}/>}Download PDF</button><button onClick={printQrCards} className="flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-extrabold text-white"><Printer size={17}/>Print Selected</button></div>
   </Modal>}
-  {qrBatch&&<Modal title="Cetak semua kartu QR" subtitle={visible.length+" siswa · 8 kartu ukuran KTP per lembar A4."} onClose={()=>setQrBatch(false)}>
-    <div className="mb-4 rounded-xl bg-sky-50 px-4 py-3 text-xs leading-5 text-sky-800">Daftar mengikuti pencarian dan filter kelas yang sedang aktif. Pilih ukuran kertas <strong>A4</strong>, orientasi potret, skala 100%, dan margin tidak ada pada dialog printer.</div>
-    <div className="qr-print-root max-h-[55vh] space-y-4 overflow-y-auto rounded-2xl bg-slate-100 p-4">
-      {Array.from({length:Math.ceil(visible.length/8)},(_,pageIndex)=><section key={pageIndex} className="qr-print-page space-y-3 rounded-xl border border-dashed border-slate-300 bg-white p-3">
-        {visible.slice(pageIndex*8,pageIndex*8+8).map((student)=><StudentQrCard key={student.id} student={student} schoolName={schoolName} academicYear={academicYear}/>)}
-      </section>)}
+  {qrBatch&&<Modal title="Print Preview Student ID" subtitle={`${visible.length} siswa - ${Math.ceil(visible.length/(printLayout==="a4-12"?12:printLayout==="a4-10"?10:8))} halaman.`} onClose={()=>setQrBatch(false)}>
+    <PrintOptions cardTemplate={cardTemplate} setCardTemplate={setCardTemplate} printLayout={printLayout} setPrintLayout={setPrintLayout} printOrientation={printOrientation} setPrintOrientation={setPrintOrientation} selectedCount={visible.length}/>
+    <div className="mb-4 rounded-xl bg-sky-50 px-4 py-3 text-xs leading-5 text-sky-800">Daftar mengikuti pencarian dan filter kelas yang sedang aktif. Pilih ukuran kertas <strong>A4</strong>, skala 100%, dan margin tidak ada pada dialog printer.</div>
+      <div className="qr-print-root max-h-[55vh] space-y-4 overflow-y-auto rounded-2xl bg-slate-100 p-4">
+      {Array.from({length:Math.ceil(visible.length/(printLayout==="a4-12"?12:printLayout==="a4-10"?10:8))},(_,pageIndex)=>{const perPage=printLayout==="a4-12"?12:printLayout==="a4-10"?10:8;return <section key={pageIndex} className={`qr-print-page qr-print-${printLayout} qr-print-${printOrientation} grid gap-3 rounded-xl border border-dashed border-slate-300 bg-white p-3`}>
+        {visible.slice(pageIndex*perPage,pageIndex*perPage+perPage).map((student)=><StudentQrCard key={student.id} student={student} schoolName={schoolName} academicYear={academicYear} user={user} template={cardTemplate}/>)}</section>})}
     </div>
     <div className="mt-4 grid gap-2 sm:grid-cols-2">
-      <button disabled={pdfDownloading} onClick={()=>void downloadQrPdf()} className="flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-3 text-sm font-extrabold text-white disabled:opacity-60">{pdfDownloading?<Loader2 className="animate-spin" size={17}/>:<Download size={17}/>}Download PDF A4</button>
-      <button onClick={()=>window.print()} className="flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-extrabold text-white"><Printer size={17}/>Print {visible.length} kartu</button>
+      <button disabled={pdfDownloading} onClick={()=>void downloadQrPdf(visible,printLayout,printOrientation)} className="flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-3 text-sm font-extrabold text-white disabled:opacity-60">{pdfDownloading?<Loader2 className="animate-spin" size={17}/>:<Download size={17}/>}Download PDF</button>
+      <button onClick={printQrCards} className="flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-extrabold text-white"><Printer size={17}/>Print All</button>
     </div>
   </Modal>}</>;
 }
-
 function Modal({title,subtitle,onClose,children}:{title:string;subtitle:string;onClose:()=>void;children:React.ReactNode}) { return <div role="dialog" aria-modal="true" aria-label={title} className="fixed inset-0 z-[80] flex items-end bg-slate-950/45 backdrop-blur-sm sm:grid sm:place-items-center sm:p-4"><div className="mobile-modal-panel max-h-[94dvh] w-full max-w-xl overflow-y-auto rounded-t-3xl bg-white p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] shadow-2xl sm:max-h-[92vh] sm:rounded-3xl sm:p-6"><div className="mb-5 flex items-start justify-between gap-4 sm:mb-6"><div className="min-w-0"><h3 className="text-lg font-black sm:text-xl">{title}</h3><p className="mt-1 text-xs leading-5 text-slate-400">{subtitle}</p></div><button onClick={onClose} aria-label="Tutup" className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-slate-100 text-slate-500"><X size={18}/></button></div>{children}</div></div> }
+
+function PrintOptions({ cardTemplate, setCardTemplate, printLayout, setPrintLayout, printOrientation, setPrintOrientation, selectedCount }: { cardTemplate: "photo" | "no-photo"; setCardTemplate: (value: "photo" | "no-photo") => void; printLayout: "single" | "a4-8" | "a4-10" | "a4-12"; setPrintLayout: (value: "single" | "a4-8" | "a4-10" | "a4-12") => void; printOrientation: "portrait" | "landscape"; setPrintOrientation: (value: "portrait" | "landscape") => void; selectedCount: number }) {
+  const cardsPerPage = printLayout === "single" ? 1 : printLayout === "a4-12" ? 12 : printLayout === "a4-10" ? 10 : 8;
+  return <div className="mb-4 grid gap-3 rounded-2xl border border-slate-200 bg-white p-3 sm:grid-cols-4">
+    <label className="block"><span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-slate-400">Template</span><select value={cardTemplate} onChange={(event)=>setCardTemplate(event.target.value as "photo"|"no-photo")} className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold"><option value="photo">Card with Student Photo</option><option value="no-photo">Card without Student Photo</option></select></label>
+    <label className="block"><span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-slate-400">Paper layout</span><select value={printLayout} onChange={(event)=>{const value=event.target.value as "single"|"a4-8"|"a4-10";setPrintLayout(value);if(value==="a4-10")setPrintOrientation("portrait")}} className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold"><option value="single">Single Card</option><option value="a4-8">A4 (8 cards)</option><option value="a4-10">A4 (10 cards)</option></select></label>
+    <label className="block"><span className="mb-1 block text-[10px] font-black uppercase tracking-wide text-slate-400">Orientation</span><select value={printOrientation} onChange={(event)=>setPrintOrientation(event.target.value as "portrait"|"landscape")} disabled={printLayout==="a4-10"} className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold disabled:bg-slate-100 disabled:text-slate-400"><option value="portrait">Portrait</option><option value="landscape">Landscape</option></select></label>
+    <div className="rounded-xl bg-slate-50 p-3"><p className="text-[10px] font-black uppercase tracking-wide text-slate-400">Total page</p><p className="mt-1 text-sm font-black text-slate-950">{Math.max(1, Math.ceil(selectedCount / cardsPerPage))} halaman</p></div>
+  </div>;
+}
+
+function rupiah(value:number){return new Intl.NumberFormat("id-ID",{style:"currency",currency:"IDR",maximumFractionDigits:0}).format(value||0)}
+function todayKey(){const date=new Date();return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`}
+
+function SavingsView({user,demo,students,setToast}:{user:User|null;demo:boolean;students:Student[];setToast:(toast:Toast)=>void}){
+  const [transactions,setTransactions]=useState<SavingsTransaction[]>(demo?[{id:"demo-save-1",ownerUid:"demo",studentId:demoStudents[0].id,studentName:demoStudents[0].name,nis:demoStudents[0].nis,nisn:demoStudents[0].nisn,className:demoStudents[0].className,type:"deposit",amount:75000,transactionDate:todayKey(),note:"Setoran awal",officerName:"Admin Demo",status:"active",createdAtMs:Date.now()-3600000},{id:"demo-save-2",ownerUid:"demo",studentId:demoStudents[1].id,studentName:demoStudents[1].name,nis:demoStudents[1].nis,nisn:demoStudents[1].nisn,className:demoStudents[1].className,type:"withdrawal",amount:15000,transactionDate:todayKey(),note:"Ambil uang kegiatan",officerName:"Admin Demo",status:"active",createdAtMs:Date.now()-1800000}]:[]);
+  const [form,setForm]=useState({type:"deposit" as "deposit"|"withdrawal",studentId:students[0]?.id??"",amount:"",transactionDate:todayKey(),note:"",officerName:user?.email??"Petugas"});
+  const [filters,setFilters]=useState({studentId:"",from:"",to:""});
+  const [saving,setSaving]=useState(false);
+  const activeTransactions=transactions.filter((item)=>item.status!=="void");
+  const balances=useMemo(()=>activeTransactions.reduce<Record<string,{balance:number;deposit:number;withdrawal:number}>>((result,item)=>{const row=result[item.studentId]??{balance:0,deposit:0,withdrawal:0};if(item.type==="deposit"){row.balance+=item.amount;row.deposit+=item.amount}else{row.balance-=item.amount;row.withdrawal+=item.amount}result[item.studentId]=row;return result},{}),[activeTransactions]);
+  const selectedStudent=students.find((item)=>item.id===form.studentId);
+  const visible=transactions.filter((item)=>(!filters.studentId||item.studentId===filters.studentId)&&(!filters.from||item.transactionDate>=filters.from)&&(!filters.to||item.transactionDate<=filters.to)).sort((a,b)=>b.transactionDate.localeCompare(a.transactionDate)||b.createdAtMs-a.createdAtMs);
+  const today=todayKey();
+  const totalBalance=Object.values(balances).reduce((sum,item)=>sum+item.balance,0);
+  const todayDeposit=activeTransactions.filter((item)=>item.transactionDate===today&&item.type==="deposit").reduce((sum,item)=>sum+item.amount,0);
+  const todayWithdrawal=activeTransactions.filter((item)=>item.transactionDate===today&&item.type==="withdrawal").reduce((sum,item)=>sum+item.amount,0);
+  const chartRows=Array.from(new Set(activeTransactions.map((item)=>item.transactionDate))).sort().slice(-7).map((date)=>({date,deposit:activeTransactions.filter((item)=>item.transactionDate===date&&item.type==="deposit").reduce((sum,item)=>sum+item.amount,0),withdrawal:activeTransactions.filter((item)=>item.transactionDate===date&&item.type==="withdrawal").reduce((sum,item)=>sum+item.amount,0)}));
+  const maxChart=Math.max(1,...chartRows.flatMap((item)=>[item.deposit,item.withdrawal]));
+  useEffect(()=>{setForm((current)=>students.some((student)=>student.id===current.studentId)?current:{...current,studentId:students[0]?.id??""})},[students]);
+  useEffect(()=>{if(demo||!user)return;return onSnapshot(query(collection(db,"savingsTransactions"),where("ownerUid","==",user.uid)),(snapshot)=>setTransactions(snapshot.docs.map((item)=>({id:item.id,...item.data()} as SavingsTransaction)).sort((a,b)=>b.createdAtMs-a.createdAtMs)),()=>setToast({message:"Data tabungan belum dapat dimuat.",tone:"error"}))},[demo,user,setToast]);
+  async function submit(event:React.FormEvent){event.preventDefault();if(!selectedStudent)return;const amount=Number(form.amount);if(!Number.isFinite(amount)||amount<=0){setToast({message:"Nominal harus lebih dari 0.",tone:"error"});return;}const currentBalance=balances[selectedStudent.id]?.balance??0;if(form.type==="withdrawal"&&amount>currentBalance){setToast({message:"Penarikan ditolak karena saldo tidak cukup.",tone:"error"});return;}setSaving(true);try{const payload:Omit<SavingsTransaction,"id">={ownerUid:user?.uid??"demo",studentId:selectedStudent.id,studentName:selectedStudent.name,nis:selectedStudent.nis,nisn:selectedStudent.nisn??"",className:selectedStudent.className,type:form.type,amount,transactionDate:form.transactionDate,note:form.note.trim(),officerName:form.officerName.trim()||user?.email||"Petugas",status:"active",createdAtMs:Date.now(),updatedAtMs:Date.now()};if(demo||!user)setTransactions((items)=>[{...payload,id:crypto.randomUUID()},...items]);else await addDoc(collection(db,"savingsTransactions"),{...payload,createdAt:serverTimestamp(),updatedAt:serverTimestamp()});setForm((current)=>({...current,amount:"",note:""}));setToast({message:form.type==="deposit"?"Setoran tabungan tersimpan.":"Penarikan tabungan tersimpan.",tone:"success"});}catch(error){setToast({message:error instanceof Error?error.message:"Transaksi tabungan gagal disimpan.",tone:"error"});}finally{setSaving(false)}}
+  async function voidTransaction(item:SavingsTransaction){const reason=prompt("Alasan pembatalan transaksi:");if(!reason?.trim())return;try{if(demo)setTransactions((rows)=>rows.map((row)=>row.id===item.id?{...row,status:"void",voidReason:reason.trim(),updatedAtMs:Date.now()}:row));else await updateDoc(doc(db,"savingsTransactions",item.id),{status:"void",voidReason:reason.trim(),updatedAtMs:Date.now(),updatedAt:serverTimestamp(),voidedBy:user?.uid??""});setToast({message:"Transaksi dibatalkan tanpa dihapus permanen.",tone:"success"});}catch{setToast({message:"Transaksi belum dapat dibatalkan.",tone:"error"});}}
+  function exportExcel(){const rows=[["Tanggal","Siswa","Student ID","NIS","NISN","Kelas","Jenis","Nominal","Status","Petugas","Keterangan"],...visible.map((item)=>[item.transactionDate,item.studentName,item.studentId,item.nis,item.nisn??"",item.className,item.type==="deposit"?"Setoran":"Penarikan",String(item.amount),item.status,item.officerName,item.note])];const csv=rows.map((row)=>row.map((cell)=>`"${String(cell).replace(/"/g,'""')}"`).join(",")).join("\n");const url=URL.createObjectURL(new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8"}));const link=document.createElement("a");link.href=url;link.download="riwayat-tabungan-smart-att.csv";link.click();URL.revokeObjectURL(url)}
+  async function exportPdf(){const {jsPDF}=await import("jspdf");const pdf=new jsPDF({orientation:"landscape",unit:"mm",format:"a4"});pdf.setFont("helvetica","bold");pdf.setFontSize(14);pdf.text("Riwayat Tabungan Siswa",12,14);pdf.setFontSize(9);pdf.setFont("helvetica","normal");pdf.text(`Total saldo: ${rupiah(totalBalance)}`,12,21);let y=30;pdf.setFont("helvetica","bold");["Tanggal","Siswa","Jenis","Nominal","Status","Petugas"].forEach((head,index)=>pdf.text(head,[12,42,102,130,158,184][index],y));pdf.setFont("helvetica","normal");visible.slice(0,32).forEach((item)=>{y+=7;if(y>190){pdf.addPage("a4","landscape");y=18;}pdf.text(item.transactionDate,12,y);pdf.text(String((pdf.splitTextToSize(item.studentName,55) as string[])[0]??""),42,y);pdf.text(item.type==="deposit"?"Setoran":"Penarikan",102,y);pdf.text(rupiah(item.amount),130,y);pdf.text(item.status,158,y);pdf.text(String((pdf.splitTextToSize(item.officerName,45) as string[])[0]??""),184,y);});pdf.save("riwayat-tabungan-smart-att.pdf");}
+  return <><SectionHeading eyebrow="Administrasi" title="Tabungan siswa" description="Catat setoran, penarikan, saldo, dan audit transaksi tanpa penghapusan permanen." action={<div className="flex flex-wrap gap-2"><button onClick={exportExcel} className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-extrabold text-slate-700"><FileDown size={16}/>Export Excel</button><button onClick={()=>void exportPdf()} className="flex items-center gap-2 rounded-xl bg-teal-600 px-4 py-2.5 text-xs font-extrabold text-white"><Download size={16}/>Export PDF</button></div>}/><div className="mb-5 grid gap-4 md:grid-cols-3"><StatCard label="Total saldo siswa" value={rupiah(totalBalance)} note={`${students.length} siswa terdaftar`} icon={Wallet} tone="bg-teal-50 text-teal-600"/><StatCard label="Setoran hari ini" value={rupiah(todayDeposit)} note={today} icon={Banknote} tone="bg-emerald-50 text-emerald-600"/><StatCard label="Penarikan hari ini" value={rupiah(todayWithdrawal)} note={today} icon={Download} tone="bg-amber-50 text-amber-600"/></div><div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]"><section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h3 className="font-black">Input transaksi</h3><form onSubmit={submit} className="mt-4 space-y-4"><div className="grid grid-cols-2 gap-2"><button type="button" onClick={()=>setForm({...form,type:"deposit"})} className={`rounded-xl px-4 py-3 text-xs font-black ${form.type==="deposit"?"bg-emerald-600 text-white":"bg-slate-100 text-slate-600"}`}>Setoran</button><button type="button" onClick={()=>setForm({...form,type:"withdrawal"})} className={`rounded-xl px-4 py-3 text-xs font-black ${form.type==="withdrawal"?"bg-amber-600 text-white":"bg-slate-100 text-slate-600"}`}>Penarikan</button></div><label className="block"><span className="mb-2 block text-xs font-extrabold text-slate-700">Siswa</span><select value={form.studentId} onChange={(event)=>setForm({...form,studentId:event.target.value})} className="h-12 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold"><option value="">Pilih siswa</option>{students.map((student)=><option key={student.id} value={student.id}>{student.name} - {student.nis}</option>)}</select></label>{selectedStudent&&<div className="rounded-xl bg-slate-50 p-3 text-xs font-bold text-slate-600">Saldo {selectedStudent.name}: <span className="text-slate-950">{rupiah(balances[selectedStudent.id]?.balance??0)}</span></div>}<div className="grid gap-4 sm:grid-cols-2"><Field label="Nominal" type="number" value={form.amount} onChange={(value)=>setForm({...form,amount:value})} placeholder="50000" required/><Field label="Tanggal" type="date" value={form.transactionDate} onChange={(value)=>setForm({...form,transactionDate:value})} required/></div><Field label="Petugas" value={form.officerName} onChange={(value)=>setForm({...form,officerName:value})} required/><Field label="Keterangan" value={form.note} onChange={(value)=>setForm({...form,note:value})} placeholder="Contoh: setoran mingguan"/><button disabled={saving||!selectedStudent} className="flex w-full items-center justify-center gap-2 rounded-xl bg-teal-600 py-3 text-sm font-extrabold text-white disabled:opacity-50">{saving&&<Loader2 className="animate-spin" size={17}/>}Simpan transaksi</button></form></section><section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h3 className="font-black">Grafik transaksi</h3><div className="mt-5 space-y-3">{chartRows.length?chartRows.map((row)=><div key={row.date}><div className="mb-1 flex justify-between text-[10px] font-bold text-slate-400"><span>{row.date}</span><span>{rupiah(row.deposit-row.withdrawal)}</span></div><div className="grid grid-cols-2 gap-2"><div className="h-3 overflow-hidden rounded-full bg-emerald-50"><div className="h-full rounded-full bg-emerald-500" style={{width:`${Math.max(4,row.deposit/maxChart*100)}%`}}/></div><div className="h-3 overflow-hidden rounded-full bg-amber-50"><div className="h-full rounded-full bg-amber-500" style={{width:`${Math.max(4,row.withdrawal/maxChart*100)}%`}}/></div></div></div>):<p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">Belum ada transaksi.</p>}</div></section></div><section className="mt-5 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="grid gap-3 border-b border-slate-100 p-4 md:grid-cols-3"><select value={filters.studentId} onChange={(event)=>setFilters({...filters,studentId:event.target.value})} className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold"><option value="">Semua siswa</option>{students.map((student)=><option key={student.id} value={student.id}>{student.name}</option>)}</select><input type="date" value={filters.from} onChange={(event)=>setFilters({...filters,from:event.target.value})} className="h-11 rounded-xl border border-slate-200 px-3 text-xs font-bold"/><input type="date" value={filters.to} onChange={(event)=>setFilters({...filters,to:event.target.value})} className="h-11 rounded-xl border border-slate-200 px-3 text-xs font-bold"/></div><div className="overflow-x-auto"><table className="w-full min-w-[920px] text-left"><thead className="bg-slate-50 text-[10px] font-black uppercase tracking-wider text-slate-400"><tr><th className="px-5 py-3">Tanggal</th><th className="px-4 py-3">Siswa</th><th className="px-4 py-3">Jenis</th><th className="px-4 py-3">Nominal</th><th className="px-4 py-3">Petugas</th><th className="px-4 py-3">Status</th><th className="px-5 py-3 text-right">Audit</th></tr></thead><tbody className="divide-y divide-slate-100">{visible.map((item)=><tr key={item.id}><td className="px-5 py-4 text-xs font-bold">{item.transactionDate}</td><td className="px-4 py-4"><p className="text-sm font-black">{item.studentName}</p><p className="text-[10px] text-slate-400"> · NIS {item.nis} · NISN {item.nisn||"-"}</p></td><td className="px-4 py-4"><span className={`rounded-lg px-2.5 py-1.5 text-xs font-black ${item.type==="deposit"?"bg-emerald-50 text-emerald-700":"bg-amber-50 text-amber-700"}`}>{item.type==="deposit"?"Setoran":"Penarikan"}</span></td><td className="px-4 py-4 text-sm font-black">{rupiah(item.amount)}</td><td className="px-4 py-4 text-xs font-bold text-slate-600">{item.officerName}</td><td className="px-4 py-4 text-xs font-black">{item.status==="void"?"Dibatalkan":"Aktif"}</td><td className="px-5 py-4 text-right">{item.status==="active"?<button onClick={()=>void voidTransaction(item)} className="rounded-lg border border-amber-200 px-3 py-2 text-[11px] font-black text-amber-700">Batalkan</button>:<span className="text-[10px] font-bold text-slate-400">{item.voidReason||"Audit tersimpan"}</span>}</td></tr>)}</tbody></table></div>{!visible.length&&<div className="py-12 text-center text-sm font-bold text-slate-400">Belum ada transaksi sesuai filter.</div>}</section></>;
+}
 
 function LegacyScannerView({user,demo,students,setToast}:{user:User|null;demo:boolean;students:Student[];setToast:(t:Toast)=>void}) {
   const videoRef=useRef<HTMLVideoElement>(null); const streamRef=useRef<MediaStream|null>(null); const timerRef=useRef<ReturnType<typeof setInterval>|null>(null); const [active,setActive]=useState(false); const [manual,setManual]=useState(""); const [last,setLast]=useState<Student|null>(null);
@@ -1120,12 +1797,12 @@ function ScannerView({user,demo,students,setToast}:{user:User|null;demo:boolean;
   const videoRef=useRef<HTMLVideoElement>(null);
   const streamRef=useRef<MediaStream|null>(null);
   const timerRef=useRef<ReturnType<typeof setInterval>|null>(null);
-  const sessionRef=useRef<AttendanceSession|null>(null);
+  const sessionRef=useRef<AbsensiSession|null>(null);
   const studentsRef=useRef(students);
   const classes=useMemo(()=>Array.from(new Set(students.map((student)=>student.className).filter(Boolean))).sort(),[students]);
   const [selectedClass,setSelectedClass]=useState(classes[0]??"");
   const [schoolName,setSchoolName]=useState(demo?"SMP Harapan Bangsa":"Sekolah");
-  const [session,setSession]=useState<AttendanceSession|null>(null);
+  const [session,setSession]=useState<AbsensiSession|null>(null);
   const [active,setActive]=useState(false);
   const [manual,setManual]=useState("");
   const [last,setLast]=useState<Student|null>(null);
@@ -1140,7 +1817,7 @@ function ScannerView({user,demo,students,setToast}:{user:User|null;demo:boolean;
   useEffect(()=>{
     if(demo||!user)return;
     return onSnapshot(collection(db,"users",user.uid,"attendanceSessions"),(snapshot)=>{
-      const sessions=snapshot.docs.map((item)=>({id:item.id,...item.data(),records:item.data().records??{}} as AttendanceSession)).sort((a,b)=>b.startedAtMs-a.startedAtMs);
+      const sessions=snapshot.docs.map((item)=>({id:item.id,...item.data(),records:item.data().records??{}} as AbsensiSession)).sort((a,b)=>b.startedAtMs-a.startedAtMs);
       const latest=sessions.find((item)=>item.status==="open")??sessions[0]??null;
       setSession(latest);
       if(latest?.className)setSelectedClass(latest.className);
@@ -1155,7 +1832,7 @@ function ScannerView({user,demo,students,setToast}:{user:User|null;demo:boolean;
     if(!current||current.status!=="open"){setToast({message:"Klik Mulai Absen terlebih dahulu.",tone:"error"});return;}
     if(student.className!==current.className){setToast({message:`${student.name} terdaftar di kelas ${student.className}, bukan ${current.className}.`,tone:"error"});return;}
     if(current.records[student.id]?.status==="present"){setLast(student);setToast({message:`${student.name} sudah tercatat hadir.`,tone:"error"});return;}
-    const attendanceRecord:AttendanceRecord={studentId:student.id,status:"present",source,recordedAtMs:Date.now()};
+    const attendanceRecord:AbsensiRecord={studentId:student.id,status:"present",source,recordedAtMs:Date.now()};
     const nextSession={...current,records:{...current.records,[student.id]:attendanceRecord}};
     setSession(nextSession);sessionRef.current=nextSession;setLast(student);setManual("");
     try{
@@ -1198,7 +1875,7 @@ function ScannerView({user,demo,students,setToast}:{user:User|null;demo:boolean;
       const payload={className:selectedClass,schoolName,status:"open" as const,startedAtMs,records:{},createdAt:serverTimestamp(),updatedAt:serverTimestamp()};
       let id=crypto.randomUUID();
       if(!demo&&user){const reference=await addDoc(collection(db,"users",user.uid,"attendanceSessions"),payload);id=reference.id}
-      const nextSession:AttendanceSession={id,className:selectedClass,schoolName,status:"open",startedAtMs,records:{}};
+      const nextSession:AbsensiSession={id,className:selectedClass,schoolName,status:"open",startedAtMs,records:{}};
       setSession(nextSession);sessionRef.current=nextSession;setLast(null);
       setToast({message:`Absensi ${selectedClass} dimulai pukul ${new Date(startedAtMs).toLocaleTimeString("id-ID",{hour:"2-digit",minute:"2-digit"})}.`,tone:"success"});
       await startCamera();
@@ -1280,7 +1957,7 @@ function ScannerView({user,demo,students,setToast}:{user:User|null;demo:boolean;
   </>;
 }
 
-function AttendanceView({students}:{students:Student[]}){return <><SectionHeading eyebrow="Laporan" title="Rekap absensi" description="Pantau kehadiran per hari, minggu, semester, atau tahun." action={<button className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-extrabold"><FileDown size={16}/>Ekspor Excel</button>}/><div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{[['Hadir','28','text-emerald-600'],['Terlambat','2','text-amber-600'],['Sakit','1','text-sky-600'],['Izin','0','text-violet-600'],['Tanpa keterangan','1','text-rose-600']].map(([label,value,color])=><div key={label} className="rounded-2xl border border-slate-200 bg-white p-4"><p className="text-[11px] font-bold text-slate-400">{label}</p><p className={`mt-2 text-2xl font-black ${color}`}>{value}</p></div>)}</div><section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4"><div className="flex gap-2"><button className="rounded-lg bg-teal-600 px-3 py-2 text-xs font-bold text-white">Harian</button><button className="rounded-lg px-3 py-2 text-xs font-bold text-slate-500">Mingguan</button><button className="rounded-lg px-3 py-2 text-xs font-bold text-slate-500">6 Bulan</button><button className="rounded-lg px-3 py-2 text-xs font-bold text-slate-500">Tahunan</button></div><button className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold"><CalendarDays size={15}/>13 Juli 2026</button></div><div className="overflow-x-auto"><table className="w-full min-w-[700px]"><thead className="bg-slate-50 text-left text-[10px] uppercase tracking-wider text-slate-400"><tr><th className="px-5 py-3">Siswa</th><th className="px-4 py-3">Kelas</th><th className="px-4 py-3">Jam scan</th><th className="px-4 py-3">Status</th><th className="px-5 py-3">Keterangan</th></tr></thead><tbody className="divide-y divide-slate-100">{students.slice(0,5).map((s,i)=><tr key={s.id}><td className="px-5 py-4 text-sm font-extrabold">{s.name}<p className="text-[10px] font-normal text-slate-400">NIS {s.nis}</p></td><td className="px-4 py-4 text-xs font-bold">{s.className}</td><td className="px-4 py-4 text-xs text-slate-500">{i===4?'—':`06:${47+i*4}`}</td><td className="px-4 py-4"><span className={`rounded-lg px-2.5 py-1.5 text-xs font-bold ${i===3?'bg-amber-50 text-amber-700':i===4?'bg-rose-50 text-rose-700':'bg-emerald-50 text-emerald-700'}`}>{i===3?'Terlambat':i===4?'Belum hadir':'Hadir'}</span></td><td className="px-5 py-4 text-xs text-slate-400">{i===3?'Terlambat 3 menit':i===4?<a className="font-bold text-teal-700" href={`https://wa.me/${s.phone}?text=${encodeURIComponent('Mohon konfirmasi ketidakhadiran melalui tautan SMART-ATT.')}`}>Kirim konfirmasi WA</a>:'—'}</td></tr>)}</tbody></table></div></section></>}
+function AbsensiView({students}:{students:Student[]}){return <><SectionHeading eyebrow="Laporan" title="Rekap absensi" description="Pantau kehadiran per hari, minggu, semester, atau tahun." action={<button className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-extrabold"><FileDown size={16}/>Ekspor Excel</button>}/><div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{[['Hadir','28','text-emerald-600'],['Terlambat','2','text-amber-600'],['Sakit','1','text-sky-600'],['Izin','0','text-violet-600'],['Tanpa keterangan','1','text-rose-600']].map(([label,value,color])=><div key={label} className="rounded-2xl border border-slate-200 bg-white p-4"><p className="text-[11px] font-bold text-slate-400">{label}</p><p className={`mt-2 text-2xl font-black ${color}`}>{value}</p></div>)}</div><section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4"><div className="flex gap-2"><button className="rounded-lg bg-teal-600 px-3 py-2 text-xs font-bold text-white">Harian</button><button className="rounded-lg px-3 py-2 text-xs font-bold text-slate-500">Mingguan</button><button className="rounded-lg px-3 py-2 text-xs font-bold text-slate-500">6 Bulan</button><button className="rounded-lg px-3 py-2 text-xs font-bold text-slate-500">Tahunan</button></div><button className="flex items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold"><CalendarDays size={15}/>13 Juli 2026</button></div><div className="overflow-x-auto"><table className="w-full min-w-[700px]"><thead className="bg-slate-50 text-left text-[10px] uppercase tracking-wider text-slate-400"><tr><th className="px-5 py-3">Siswa</th><th className="px-4 py-3">Kelas</th><th className="px-4 py-3">Jam scan</th><th className="px-4 py-3">Status</th><th className="px-5 py-3">Keterangan</th></tr></thead><tbody className="divide-y divide-slate-100">{students.slice(0,5).map((s,i)=><tr key={s.id}><td className="px-5 py-4 text-sm font-extrabold">{s.name}<p className="text-[10px] font-normal text-slate-400">NIS {s.nis}</p></td><td className="px-4 py-4 text-xs font-bold">{s.className}</td><td className="px-4 py-4 text-xs text-slate-500">{i===4?'—':`06:${47+i*4}`}</td><td className="px-4 py-4"><span className={`rounded-lg px-2.5 py-1.5 text-xs font-bold ${i===3?'bg-amber-50 text-amber-700':i===4?'bg-rose-50 text-rose-700':'bg-emerald-50 text-emerald-700'}`}>{i===3?'Terlambat':i===4?'Belum hadir':'Hadir'}</span></td><td className="px-5 py-4 text-xs text-slate-400">{i===3?'Terlambat 3 menit':i===4?<a className="font-bold text-teal-700" href={`https://wa.me/${s.phone}?text=${encodeURIComponent('Mohon konfirmasi ketidakhadiran melalui tautan SMART-ATT.')}`}>Kirim konfirmasi WA</a>:'—'}</td></tr>)}</tbody></table></div></section></>}
 
 function taskDeadlineLabel(deadline: string) {
   const date = new Date(deadline);
@@ -1294,9 +1971,9 @@ function taskVisualStatus(task: TaskRecord): { key: "active" | "draft" | "expire
   return { key: "active", label: "Aktif", tone: "bg-emerald-50 text-emerald-700" };
 }
 
-function TasksView({ user, demo, students, setToast }: { user: User | null; demo: boolean; students: Student[]; setToast: (t: Toast) => void }) {
+function TasksView({ user, demo, students, activeSession, setToast }: { user: User | null; demo: boolean; students: Student[]; activeSession: ActiveTeachingSession; setToast: (t: Toast) => void }) {
   const classes = useMemo(() => Array.from(new Set(students.map((student) => student.className).filter(Boolean))).sort(), [students]);
-  const blankForm = (): TaskForm => ({ subject: "", className: classes[0] ?? "", title: "", description: "", deadline: "", published: true });
+  const blankForm = (): TaskForm => ({ subject: activeSession.subjectName || "", className: activeSession.className || classes[0] || "", title: "", description: "", deadline: "", published: true });
   const [tasks, setTasks] = useState<TaskRecord[]>(demo ? demoTasks : []);
   const [form, setForm] = useState<TaskForm>(blankForm);
   const [editing, setEditing] = useState<TaskRecord | null>(null);
@@ -1442,7 +2119,7 @@ function TasksView({ user, demo, students, setToast }: { user: User | null; demo
     <div className="mb-5 grid gap-3 sm:grid-cols-3"><StatCard label="Tugas aktif" value={String(counts.active)} note="Dapat dibuka siswa" icon={Send} tone="bg-emerald-50 text-emerald-600"/><StatCard label="Draf" value={String(counts.draft)} note="Belum dipublikasikan" icon={FileText} tone="bg-slate-100 text-slate-600"/><StatCard label="Lewat tenggat" value={String(counts.expired)} note="Link masih tersimpan" icon={Clock3} tone="bg-rose-50 text-rose-600"/></div>
     <div className="mb-5 flex flex-wrap gap-2">{([['all','Semua'],['active','Aktif'],['draft','Draf'],['expired','Lewat tenggat']] as const).map(([key,label])=><button key={key} onClick={()=>setFilter(key)} className={`rounded-xl px-3.5 py-2 text-xs font-extrabold transition ${filter===key?'bg-slate-950 text-white':'border border-slate-200 bg-white text-slate-600 hover:border-slate-300'}`}>{label}</button>)}</div>
     {loading ? <div className="grid min-h-52 place-items-center rounded-2xl border border-slate-200 bg-white"><Loader2 className="animate-spin text-teal-600" size={30}/></div> : visibleTasks.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-14 text-center"><div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-teal-50 text-teal-700"><BookOpen size={25}/></div><h3 className="mt-4 font-black">Belum ada tugas pada kategori ini</h3><p className="mt-1 text-sm text-slate-500">Buat tugas pertama lalu bagikan link kepada siswa.</p><button onClick={openCreate} className="mt-5 rounded-xl bg-teal-600 px-4 py-2.5 text-xs font-extrabold text-white">Buat tugas</button></div> : <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{visibleTasks.map((task)=>{const status=taskVisualStatus(task);return <article key={task.id} className="flex flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex items-start justify-between gap-3"><span className="rounded-lg bg-violet-50 px-2.5 py-1.5 text-[10px] font-black text-violet-700">{task.subject}</span><span className={`rounded-full px-2.5 py-1 text-[9px] font-black ${status.tone}`}>{status.label}</span></div><h3 className="mt-5 text-lg font-black leading-snug">{task.title}</h3><p className="mt-3 line-clamp-3 min-h-[3.75rem] text-xs leading-5 text-slate-500">{task.description}</p><div className="my-5 h-px bg-slate-100"/><div className="flex items-center justify-between gap-3 text-xs"><span className="rounded-lg bg-slate-100 px-2.5 py-1 font-bold text-slate-600">{task.className}</span><span className="flex items-center gap-1 text-right text-slate-400"><Clock3 size={13}/>{taskDeadlineLabel(task.deadline)}</span></div><div className="mt-auto flex flex-wrap gap-2 pt-5">{task.published?<button onClick={()=>void copyLink(task)} className="flex min-w-[8rem] flex-1 items-center justify-center gap-2 rounded-xl bg-teal-600 py-2.5 text-xs font-extrabold text-white"><Link2 size={14}/>Salin link</button>:<button onClick={()=>void togglePublish(task)} className="flex min-w-[8rem] flex-1 items-center justify-center gap-2 rounded-xl bg-slate-950 py-2.5 text-xs font-extrabold text-white"><Send size={14}/>Publikasikan</button>}<button onClick={()=>openEdit(task)} title="Edit tugas" className="rounded-xl border border-slate-200 p-2.5 text-slate-500 hover:bg-slate-50"><PencilLine size={15}/></button><button onClick={()=>void togglePublish(task)} title={task.published?'Nonaktifkan link':'Publikasikan'} className="rounded-xl border border-slate-200 p-2.5 text-slate-500 hover:bg-slate-50">{task.published?<XCircle size={15}/>:<CheckCircle2 size={15}/>}</button><button onClick={()=>void removeTask(task)} title="Hapus tugas" className="rounded-xl border border-rose-100 p-2.5 text-rose-500 hover:bg-rose-50"><Trash2 size={15}/></button></div></article>})}</div>}
-    {open&&<Modal title={editing?"Edit tugas":"Buat tugas baru"} subtitle="Simpan sebagai draf atau publikasikan agar dapat dibuka siswa." onClose={()=>!saving&&setOpen(false)}><form onSubmit={saveTask} className="space-y-4"><div className="grid gap-4 sm:grid-cols-2"><Field label="Mata pelajaran" value={form.subject} onChange={(subject)=>setForm((current)=>({...current,subject}))} placeholder="Contoh: Matematika" required/><label className="block"><span className="mb-2 block text-xs font-extrabold text-slate-700">Kelas</span>{classes.length?<select required value={form.className} onChange={(event)=>setForm((current)=>({...current,className:event.target.value}))} className="h-12 w-full rounded-xl border border-slate-200 bg-white px-4 text-sm outline-none focus:border-teal-500">{classes.map((className)=><option key={className}>{className}</option>)}</select>:<input required value={form.className} onChange={(event)=>setForm((current)=>({...current,className:event.target.value}))} placeholder="Contoh: VII A" className="h-12 w-full rounded-xl border border-slate-200 px-4 text-sm outline-none focus:border-teal-500"/>}</label></div><Field label="Judul tugas" value={form.title} onChange={(title)=>setForm((current)=>({...current,title}))} placeholder="Contoh: Latihan aljabar" required/><label className="block"><span className="mb-2 block text-xs font-extrabold text-slate-700">Deskripsi / instruksi</span><textarea required value={form.description} onChange={(event)=>setForm((current)=>({...current,description:event.target.value}))} className="min-h-32 w-full rounded-xl border border-slate-200 p-3 text-sm outline-none focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10" placeholder="Tuliskan materi, nomor soal, dan petunjuk pengerjaan..."/></label><Field label="Tenggat waktu" type="datetime-local" value={form.deadline} onChange={(deadline)=>setForm((current)=>({...current,deadline}))} required/><label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4"><input type="checkbox" checked={form.published} onChange={(event)=>setForm((current)=>({...current,published:event.target.checked}))} className="mt-0.5 h-4 w-4 accent-teal-600"/><span><span className="block text-sm font-extrabold">Publikasikan sekarang</span><span className="mt-1 block text-xs leading-5 text-slate-500">Siswa dapat membuka tugas tanpa login melalui link publik.</span></span></label><div className="flex gap-3"><button type="button" disabled={saving} onClick={()=>setOpen(false)} className="flex-1 rounded-xl border border-slate-200 py-3 text-sm font-extrabold text-slate-600">Batal</button><button disabled={saving} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-teal-600 py-3 text-sm font-extrabold text-white disabled:opacity-60">{saving&&<Loader2 className="animate-spin" size={17}/>}Simpan tugas</button></div></form></Modal>}
+    {open&&<Modal title={editing?"Edit tugas":"Buat tugas baru"} subtitle="Simpan sebagai draf atau publikasikan agar dapat dibuka siswa." onClose={()=>!saving&&setOpen(false)}><form onSubmit={saveTask} className="space-y-4"><div className="grid gap-4 sm:grid-cols-2"><Field label="Mata pelajaran" value={form.subject} onChange={(subject)=>setForm((current)=>({...current,subject}))} placeholder="Contoh: Matematika" required/><label className="block"><span className="mb-2 block text-xs font-extrabold text-slate-700">Kelas</span>{classes.length?<select required value={form.className} onChange={(event)=>setForm((current)=>({...current,className:event.target.value}))} className="h-12 w-full rounded-xl border border-slate-200 bg-white px-4 text-sm outline-none focus:border-teal-500">{classes.map((className)=><option key={className}>{className}</option>)}</select>:<input required value={form.className} onChange={(event)=>setForm((current)=>({...current,className:event.target.value}))} placeholder="Contoh: V-A" className="h-12 w-full rounded-xl border border-slate-200 px-4 text-sm outline-none focus:border-teal-500"/>}</label></div><Field label="Judul tugas" value={form.title} onChange={(title)=>setForm((current)=>({...current,title}))} placeholder="Contoh: Latihan aljabar" required/><label className="block"><span className="mb-2 block text-xs font-extrabold text-slate-700">Deskripsi / instruksi</span><textarea required value={form.description} onChange={(event)=>setForm((current)=>({...current,description:event.target.value}))} className="min-h-32 w-full rounded-xl border border-slate-200 p-3 text-sm outline-none focus:border-teal-500 focus:ring-4 focus:ring-teal-500/10" placeholder="Tuliskan materi, nomor soal, dan petunjuk pengerjaan..."/></label><Field label="Tenggat waktu" type="datetime-local" value={form.deadline} onChange={(deadline)=>setForm((current)=>({...current,deadline}))} required/><label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4"><input type="checkbox" checked={form.published} onChange={(event)=>setForm((current)=>({...current,published:event.target.checked}))} className="mt-0.5 h-4 w-4 accent-teal-600"/><span><span className="block text-sm font-extrabold">Publikasikan sekarang</span><span className="mt-1 block text-xs leading-5 text-slate-500">Siswa dapat membuka tugas tanpa login melalui link publik.</span></span></label><div className="flex gap-3"><button type="button" disabled={saving} onClick={()=>setOpen(false)} className="flex-1 rounded-xl border border-slate-200 py-3 text-sm font-extrabold text-slate-600">Batal</button><button disabled={saving} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-teal-600 py-3 text-sm font-extrabold text-white disabled:opacity-60">{saving&&<Loader2 className="animate-spin" size={17}/>}Simpan tugas</button></div></form></Modal>}
   </>;
 }
 
@@ -1490,11 +2167,11 @@ function ManualExamModal({user,demo,students,setToast,onClose}:{user:User|null;d
     finally{setSaving(false);}
   }
 
-  return <Modal title="Buat soal manual" subtitle="Tambahkan soal satu per satu, tentukan kunci, lalu simpan sebagai draf." onClose={onClose}><div className="space-y-4"><div className="grid gap-4 sm:grid-cols-2"><Field label="Judul ulangan" value={title} onChange={setTitle} placeholder="Contoh: Ulangan Harian Bab 1" required/><Field label="Mata pelajaran" value={subject} onChange={setSubject} placeholder="Matematika" required/></div><div className="grid gap-4 sm:grid-cols-3"><label className="block"><span className="mb-2 block text-xs font-extrabold text-slate-700">Kelas</span>{classes.length?<select value={className} onChange={(event)=>setClassName(event.target.value)} className="h-12 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-teal-500">{classes.map((item)=><option key={item}>{item}</option>)}</select>:<input value={className} onChange={(event)=>setClassName(event.target.value)} placeholder="VII A" className="h-12 w-full rounded-xl border border-slate-200 px-3 text-sm outline-none focus:border-teal-500"/>}</label><Field label="Bab / materi" value={chapter} onChange={setChapter} placeholder="Materi ujian"/><Field label="Durasi (menit)" type="number" value={duration} onChange={setDuration}/></div><div className="my-5 border-t border-slate-100"/><div className="rounded-2xl bg-slate-50 p-4"><div className="mb-4 flex items-center justify-between"><div><h4 className="text-sm font-black">{editingIndex===null?`Soal ${questions.length+1}`:`Edit soal ${editingIndex+1}`}</h4><p className="mt-1 text-[10px] text-slate-400">Pilih satu jawaban yang benar.</p></div>{editingIndex!==null&&<button onClick={()=>{setDraft(emptyQuestion());setEditingIndex(null)}} className="text-xs font-bold text-slate-500">Batal edit</button>}</div><label className="block"><span className="mb-2 block text-xs font-extrabold">Pertanyaan</span><textarea value={draft.question} onChange={(event)=>setDraft((current)=>({...current,question:event.target.value}))} className="min-h-24 w-full rounded-xl border border-slate-200 bg-white p-3 text-sm outline-none focus:border-teal-500" placeholder="Tuliskan pertanyaan..."/></label><div className="mt-4 grid gap-3 sm:grid-cols-2">{draft.choices.map((choice,index)=><label key={index} className={`flex items-center gap-2 rounded-xl border p-2 ${draft.answerIndex===index?'border-emerald-300 bg-emerald-50':'border-slate-200 bg-white'}`}><input type="radio" name="correct-answer" checked={draft.answerIndex===index} onChange={()=>setDraft((current)=>({...current,answerIndex:index}))} className="accent-emerald-600"/><span className="text-xs font-black text-slate-500">{String.fromCharCode(65+index)}</span><input value={choice} onChange={(event)=>updateChoice(index,event.target.value)} placeholder={`Pilihan ${String.fromCharCode(65+index)}`} className="h-9 min-w-0 flex-1 bg-transparent text-xs outline-none"/></label>)}</div><label className="mt-4 block"><span className="mb-2 block text-xs font-extrabold">Pembahasan (opsional)</span><textarea value={draft.explanation} onChange={(event)=>setDraft((current)=>({...current,explanation:event.target.value}))} className="min-h-20 w-full rounded-xl border border-slate-200 bg-white p-3 text-sm outline-none focus:border-teal-500" placeholder="Jelaskan alasan jawaban yang benar..."/></label><button type="button" onClick={saveQuestion} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-slate-950 py-3 text-xs font-extrabold text-white"><Plus size={15}/>{editingIndex===null?'Tambahkan soal':'Simpan perubahan soal'}</button></div>{questions.length>0&&<div><h4 className="mb-3 text-sm font-black">Daftar soal · {questions.length} butir</h4><div className="max-h-56 space-y-2 overflow-y-auto pr-1">{questions.map((question,index)=><div key={`${index}-${question.question}`} className="flex items-start gap-3 rounded-xl border border-slate-200 p-3"><span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-teal-50 text-xs font-black text-teal-700">{index+1}</span><div className="min-w-0 flex-1"><p className="line-clamp-2 text-xs font-bold leading-5">{question.question}</p><p className="mt-1 text-[10px] text-emerald-600">Kunci {String.fromCharCode(65+question.answerIndex)} · {question.choices[question.answerIndex]}</p></div><button onClick={()=>editQuestion(index)} className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"><PencilLine size={14}/></button><button onClick={()=>removeQuestion(index)} className="rounded-lg p-2 text-rose-500 hover:bg-rose-50"><Trash2 size={14}/></button></div>)}</div></div>}<div className="flex gap-3 border-t border-slate-100 pt-4"><button disabled={saving} onClick={onClose} className="flex-1 rounded-xl border border-slate-200 py-3 text-xs font-extrabold text-slate-600">Batal</button><button disabled={saving||!questions.length} onClick={()=>void saveExam()} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-teal-600 py-3 text-xs font-extrabold text-white disabled:opacity-40">{saving?<Loader2 className="animate-spin" size={16}/>:<CheckCircle2 size={16}/>}Simpan sebagai draf</button></div></div></Modal>;
+  return <Modal title="Buat soal manual" subtitle="Tambahkan soal satu per satu, tentukan kunci, lalu simpan sebagai draf." onClose={onClose}><div className="space-y-4"><div className="grid gap-4 sm:grid-cols-2"><Field label="Judul ulangan" value={title} onChange={setTitle} placeholder="Contoh: Ulangan Harian Bab 1" required/><Field label="Mata pelajaran" value={subject} onChange={setSubject} placeholder="Matematika" required/></div><div className="grid gap-4 sm:grid-cols-3"><label className="block"><span className="mb-2 block text-xs font-extrabold text-slate-700">Kelas</span>{classes.length?<select value={className} onChange={(event)=>setClassName(event.target.value)} className="h-12 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-teal-500">{classes.map((item)=><option key={item}>{item}</option>)}</select>:<input value={className} onChange={(event)=>setClassName(event.target.value)} placeholder="V-A" className="h-12 w-full rounded-xl border border-slate-200 px-3 text-sm outline-none focus:border-teal-500"/>}</label><Field label="Bab / materi" value={chapter} onChange={setChapter} placeholder="Materi ujian"/><Field label="Durasi (menit)" type="number" value={duration} onChange={setDuration}/></div><div className="my-5 border-t border-slate-100"/><div className="rounded-2xl bg-slate-50 p-4"><div className="mb-4 flex items-center justify-between"><div><h4 className="text-sm font-black">{editingIndex===null?`Soal ${questions.length+1}`:`Edit soal ${editingIndex+1}`}</h4><p className="mt-1 text-[10px] text-slate-400">Pilih satu jawaban yang benar.</p></div>{editingIndex!==null&&<button onClick={()=>{setDraft(emptyQuestion());setEditingIndex(null)}} className="text-xs font-bold text-slate-500">Batal edit</button>}</div><label className="block"><span className="mb-2 block text-xs font-extrabold">Pertanyaan</span><textarea value={draft.question} onChange={(event)=>setDraft((current)=>({...current,question:event.target.value}))} className="min-h-24 w-full rounded-xl border border-slate-200 bg-white p-3 text-sm outline-none focus:border-teal-500" placeholder="Tuliskan pertanyaan..."/></label><div className="mt-4 grid gap-3 sm:grid-cols-2">{draft.choices.map((choice,index)=><label key={index} className={`flex items-center gap-2 rounded-xl border p-2 ${draft.answerIndex===index?'border-emerald-300 bg-emerald-50':'border-slate-200 bg-white'}`}><input type="radio" name="correct-answer" checked={draft.answerIndex===index} onChange={()=>setDraft((current)=>({...current,answerIndex:index}))} className="accent-emerald-600"/><span className="text-xs font-black text-slate-500">{String.fromCharCode(65+index)}</span><input value={choice} onChange={(event)=>updateChoice(index,event.target.value)} placeholder={`Pilihan ${String.fromCharCode(65+index)}`} className="h-9 min-w-0 flex-1 bg-transparent text-xs outline-none"/></label>)}</div><label className="mt-4 block"><span className="mb-2 block text-xs font-extrabold">Pembahasan (opsional)</span><textarea value={draft.explanation} onChange={(event)=>setDraft((current)=>({...current,explanation:event.target.value}))} className="min-h-20 w-full rounded-xl border border-slate-200 bg-white p-3 text-sm outline-none focus:border-teal-500" placeholder="Jelaskan alasan jawaban yang benar..."/></label><button type="button" onClick={saveQuestion} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-slate-950 py-3 text-xs font-extrabold text-white"><Plus size={15}/>{editingIndex===null?'Tambahkan soal':'Simpan perubahan soal'}</button></div>{questions.length>0&&<div><h4 className="mb-3 text-sm font-black">Daftar soal · {questions.length} butir</h4><div className="max-h-56 space-y-2 overflow-y-auto pr-1">{questions.map((question,index)=><div key={`${index}-${question.question}`} className="flex items-start gap-3 rounded-xl border border-slate-200 p-3"><span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-teal-50 text-xs font-black text-teal-700">{index+1}</span><div className="min-w-0 flex-1"><p className="line-clamp-2 text-xs font-bold leading-5">{question.question}</p><p className="mt-1 text-[10px] text-emerald-600">Kunci {String.fromCharCode(65+question.answerIndex)} · {question.choices[question.answerIndex]}</p></div><button onClick={()=>editQuestion(index)} className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"><PencilLine size={14}/></button><button onClick={()=>removeQuestion(index)} className="rounded-lg p-2 text-rose-500 hover:bg-rose-50"><Trash2 size={14}/></button></div>)}</div></div>}<div className="flex gap-3 border-t border-slate-100 pt-4"><button disabled={saving} onClick={onClose} className="flex-1 rounded-xl border border-slate-200 py-3 text-xs font-extrabold text-slate-600">Batal</button><button disabled={saving||!questions.length} onClick={()=>void saveExam()} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-teal-600 py-3 text-xs font-extrabold text-white disabled:opacity-40">{saving?<Loader2 className="animate-spin" size={16}/>:<CheckCircle2 size={16}/>}Simpan sebagai draf</button></div></div></Modal>;
 }
 
 function ExamsViewAdvanced({user,demo,students,setToast}:{user:User|null;demo:boolean;students:Student[];setToast:(t:Toast)=>void}){
-  const sampleExam:ExamRecord={id:"demo-exam",title:"Quiz Matematika — Persamaan Linear",subject:"Matematika",className:"VII A",chapter:"Persamaan linear",status:"draft",source:"ai",durationMinutes:60,questions:[{question:"Nilai x yang memenuhi 3x + 5 = 20 adalah...",choices:["3","5","7","15"],answerIndex:1,explanation:"3x = 15, sehingga x = 5."}]};
+  const sampleExam:ExamRecord={id:"demo-exam",title:"Kuis Matematika — Persamaan Linear",subject:"Matematika",className:"V-A",chapter:"Persamaan linear",status:"draft",source:"ai",durationMinutes:60,questions:[{question:"Nilai x yang memenuhi 3x + 5 = 20 adalah...",choices:["3","5","7","15"],answerIndex:1,explanation:"3x = 15, sehingga x = 5."}]};
   const [exams,setExams]=useState<ExamRecord[]>(demo?[sampleExam]:[]);
   const [attempts,setAttempts]=useState<QuizAttempt[]>([]);
   const [loading,setLoading]=useState(!demo);
@@ -1552,7 +2229,7 @@ const [durationMinutes,setDurationMinutes]=useState("60");
       const snapshotRef=exam.snapshotId?doc(db,"publicSnapshots",exam.snapshotId):doc(collection(db,"publicSnapshots"));
       const batch=writeBatch(db);
       batch.update(doc(db,"users",user.uid,"exams",exam.id),{status,snapshotId:snapshotRef.id,durationMinutes:duration,startAtMs,endAtMs,targetStudentCount:deleteField(),updatedAt:serverTimestamp()});
-      batch.set(snapshotRef,{type:"quiz",ownerUid:user.uid,examId:exam.id,published:true,title:exam.title,subject:exam.subject,className:exam.className,chapter:exam.chapter??"",questions:exam.questions,durationMinutes:duration,startAtMs,endAtMs,startAt:new Date(startAtMs),endAt:new Date(endAtMs),students:participants.map(({id,nis,name,className})=>({id,nis,name,className})),updatedAt:serverTimestamp()},{merge:true});
+      batch.set(snapshotRef,{type:"quiz",ownerUid:user.uid,examId:exam.id,published:true,title:exam.title,subjectId:exam.subjectId??"",subject:exam.subject,className:exam.className,chapter:exam.chapter??"",gradeCategory:exam.gradeCategory??"summative",assessmentType:exam.assessmentType??"daily_test",questions:exam.questions,durationMinutes:duration,startAtMs,endAtMs,startAt:new Date(startAtMs),endAt:new Date(endAtMs),students:participants.map(({id,nis,name,className})=>({id,nis,name,className})),updatedAt:serverTimestamp()},{merge:true});
       await batch.commit();setExams((current)=>current.map((item)=>item.id===exam.id?{...item,status,snapshotId:snapshotRef.id,durationMinutes:duration,startAtMs,endAtMs,targetStudentCount:undefined}:item));setReview(null);setToast({message:status==="scheduled"?"Ulangan dijadwalkan dan link countdown siap dibagikan.":"Ulangan sudah online dan link siswa siap dibagikan.",tone:"success"});
     }catch{setToast({message:"Ulangan gagal dipublikasikan.",tone:"error"});}
     finally{setBusyId("");}
@@ -1610,7 +2287,7 @@ const [durationMinutes,setDurationMinutes]=useState("60");
 
 function ExamsView({user,demo,setToast}:{user:User|null;demo:boolean;setToast:(t:Toast)=>void}){
   const demoExams:ExamRecord[]=[
-    {id:"demo-exam-1",title:"Quiz Matematika — Persamaan Linear",subject:"Matematika",className:"VII A",chapter:"Persamaan linear",status:"draft",source:"ai",questions:[{question:"Nilai x yang memenuhi 3x + 5 = 20 adalah...",choices:["3","5","7","15"],answerIndex:1,explanation:"3x = 15, sehingga x = 5."}]},
+    {id:"demo-exam-1",title:"Kuis Matematika — Persamaan Linear",subject:"Matematika",className:"V-A",chapter:"Persamaan linear",status:"draft",source:"ai",questions:[{question:"Nilai x yang memenuhi 3x + 5 = 20 adalah...",choices:["3","5","7","15"],answerIndex:1,explanation:"3x = 15, sehingga x = 5."}]},
   ];
   const [exams,setExams]=useState<ExamRecord[]>(demo?demoExams:[]);
   const [loading,setLoading]=useState(!demo);
@@ -1693,9 +2370,10 @@ function AiGenerator({user,demo,setToast}:{user:User|null;demo:boolean;setToast:
   </>;
 }
 
-function AiGeneratorConnected({user,demo,setToast}:{user:User|null;demo:boolean;setToast:(t:Toast)=>void}){
-  const [subject,setSubject]=useState("Matematika");
-  const [grade,setGrade]=useState("VII A");
+function AiGeneratorConnected({user,demo,activeSession,setToast}:{user:User|null;demo:boolean;activeSession:ActiveTeachingSession;setToast:(t:Toast)=>void}){
+  const [subject,setSubject]=useState(activeSession.subjectName || "Matematika");
+  const [grade,setGrade]=useState(activeSession.className || "V-A");
+  const [gradeCategory,setGradeCategory]=useState<"quiz"|"summative"|"midterm"|"final">("summative");
   const [chapter,setChapter]=useState("Persamaan linear satu variabel");
   const [count,setCount]=useState("20");
   const [choices,setChoices]=useState("4");
@@ -1705,12 +2383,18 @@ function AiGeneratorConnected({user,demo,setToast}:{user:User|null;demo:boolean;
   const [savedExamId,setSavedExamId]=useState("");
   const prompt=`Buat ${count} soal pilihan ganda mata pelajaran ${subject} untuk kelas ${grade}, bab ${chapter}. Setiap soal memiliki ${choices} pilihan, tepat satu jawaban benar, dan pembahasan singkat. Buat semua pilihan pengecoh masuk akal, mirip satu sama lain, tidak mudah ditebak, dan membutuhkan ketelitian. Untuk soal hitungan, gunakan hasil dari kesalahan hitung yang umum sebagai pengecoh dan pastikan hanya satu hasil yang benar. Hindari pilihan yang terlalu berbeda, lucu, atau jelas salah. Keluarkan JSON dengan struktur: {"questions":[{"question":"...","choices":["..."],"answerIndex":0,"explanation":"..."}]}. Pastikan answerIndex dimulai dari 0, kunci sesuai pilihan yang benar, dan seluruh soal lengkap.`;
 
+  useEffect(()=>{setSubject(activeSession.subjectName || "Matematika");setGrade(activeSession.className || "V-A");},[activeSession.subjectName,activeSession.className]);
+
   async function persistDraft(items:QuizQuestion[]){
     setSaving(true);
     try{
       if(!demo&&user){
         const examRef=savedExamId?doc(db,"users",user.uid,"exams",savedExamId):doc(collection(db,"users",user.uid,"exams"));
-        await setDoc(examRef,{title:`${subject} — ${chapter}`,subject,className:grade,chapter,questions:items,status:"draft",source:"ai",...(!savedExamId?{createdAt:serverTimestamp()}:{}),updatedAt:serverTimestamp()},{merge:true});
+        const normalizedSubject=subject.trim().toLocaleLowerCase("id-ID");
+        const activeSubjectMatches=normalizedSubject===activeSession.subjectName.trim().toLocaleLowerCase("id-ID");
+        const subjectId=activeSubjectMatches&&activeSession.subjectId?activeSession.subjectId:`subject-${normalizedSubject.replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"")||"lainnya"}`;
+        const assessmentType=gradeCategory==="quiz"?"quiz":gradeCategory==="midterm"?"pts_sts":gradeCategory==="final"?"pas_sas":"daily_test";
+        await setDoc(examRef,{title:`${subject} — ${chapter}`,subjectId,subject:subject.trim(),className:grade.trim(),chapter:chapter.trim(),gradeCategory,assessmentType,questions:items,status:"draft",source:"ai",...(!savedExamId?{createdAt:serverTimestamp()}:{}),updatedAt:serverTimestamp()},{merge:true});
         setSavedExamId(examRef.id);
       }else if(!demo){
         throw new Error("Sesi login tidak tersedia");
@@ -1741,14 +2425,14 @@ function AiGeneratorConnected({user,demo,setToast}:{user:User|null;demo:boolean;
     catch{setToast({message:"File tidak dapat dibaca.",tone:"error"});}
   }
 
-  return <><SectionHeading eyebrow="Asisten AI" title="Generator soal AI" description="Tempel hasil AI, lalu SMART-ATT langsung membuat dan menyimpan draf soal."/><div className="grid gap-6 xl:grid-cols-[.8fr_1.2fr]"><section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h3 className="mb-5 font-black">1. Atur kebutuhan soal</h3><div className="space-y-4"><Field label="Mata pelajaran" value={subject} onChange={(value)=>{setSubject(value)}}/><Field label="Kelas" value={grade} onChange={(value)=>{setGrade(value)}}/><Field label="Bab / materi" value={chapter} onChange={(value)=>{setChapter(value)}}/><div className="grid grid-cols-2 gap-3"><Field label="Jumlah soal" type="number" value={count} onChange={setCount}/><Field label="Pilihan jawaban" type="number" value={choices} onChange={setChoices}/></div></div></section><section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="mb-4 flex items-center justify-between"><div><h3 className="font-black">2. Salin prompt ke AI</h3><p className="mt-1 text-xs text-slate-400">Gunakan di ChatGPT, Gemini, atau AI lainnya.</p></div><Sparkles className="text-teal-600" size={22}/></div><pre className="min-h-64 whitespace-pre-wrap rounded-2xl bg-slate-950 p-5 font-mono text-xs leading-6 text-slate-300">{prompt}</pre><button onClick={()=>void navigator.clipboard.writeText(prompt).then(()=>setToast({message:"Prompt AI disalin.",tone:"success"})).catch(()=>setToast({message:"Prompt gagal disalin.",tone:"error"}))} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-teal-600 py-3 text-xs font-extrabold text-white"><Copy size={16}/>Salin prompt</button></section></div>
+  return <><SectionHeading eyebrow="Asisten AI" title="Generator soal AI" description="Soal mengikuti mata pelajaran aktif dan nilai siswa otomatis masuk ke Rekap Nilai setelah ujian selesai."/><div className="mb-5 flex flex-wrap items-center gap-2 rounded-2xl border border-teal-200 bg-teal-50 px-4 py-3 text-xs font-bold text-teal-800"><CheckCircle2 size={16}/><span>Mata pelajaran aktif: <strong>{subject}</strong></span><span className="text-teal-500">·</span><span>Kelas: <strong>{grade}</strong></span><span className="text-teal-500">·</span><span>Nilai tersinkron otomatis per siswa.</span></div><div className="grid gap-6 xl:grid-cols-[.8fr_1.2fr]"><section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><h3 className="mb-5 font-black">1. Atur kebutuhan soal</h3><div className="space-y-4"><Field label="Mata pelajaran" value={subject} onChange={(value)=>{setSubject(value)}}/><Field label="Kelas" value={grade} onChange={(value)=>{setGrade(value)}}/><Field label="Bab / materi" value={chapter} onChange={(value)=>{setChapter(value)}}/><label className="block"><span className="mb-2 block text-xs font-extrabold text-slate-700">Masuk ke komponen nilai</span><select value={gradeCategory} onChange={(event)=>setGradeCategory(event.target.value as typeof gradeCategory)} className="h-12 w-full rounded-xl border border-slate-200 bg-white px-4 text-sm outline-none focus:border-teal-500"><option value="summative">Ulangan Harian / Sumatif</option><option value="quiz">Kuis / Formatif</option><option value="midterm">PTS / STS</option><option value="final">PAS / SAS</option></select><span className="mt-1.5 block text-[10px] leading-4 text-slate-400">Setelah siswa menekan selesai, nilainya otomatis tercatat pada mata pelajaran dan komponen ini.</span></label><div className="grid grid-cols-2 gap-3"><Field label="Jumlah soal" type="number" value={count} onChange={setCount}/><Field label="Pilihan jawaban" type="number" value={choices} onChange={setChoices}/></div></div></section><section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="mb-4 flex items-center justify-between"><div><h3 className="font-black">2. Salin prompt ke AI</h3><p className="mt-1 text-xs text-slate-400">Gunakan di ChatGPT, Gemini, atau AI lainnya.</p></div><Sparkles className="text-teal-600" size={22}/></div><pre className="min-h-64 whitespace-pre-wrap rounded-2xl bg-slate-950 p-5 font-mono text-xs leading-6 text-slate-300">{prompt}</pre><button onClick={()=>void navigator.clipboard.writeText(prompt).then(()=>setToast({message:"Prompt AI disalin.",tone:"success"})).catch(()=>setToast({message:"Prompt gagal disalin.",tone:"error"}))} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-teal-600 py-3 text-xs font-extrabold text-white"><Copy size={16}/>Salin prompt</button></section></div>
     <section className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between"><div><h3 className="font-black">3. Tempel dan simpan hasil AI</h3><p className="mt-1 text-xs leading-5 text-slate-500">Mendukung JSON, blok Markdown, dan tulisan soal bernomor dengan pilihan A/B/C/D.</p></div><div className="flex shrink-0 gap-2"><button onClick={()=>void pasteFromClipboard()} className="flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-extrabold text-slate-600"><ClipboardCheck size={15}/>Tempel otomatis</button><label className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-extrabold text-slate-600"><Upload size={15}/>Pilih file<input type="file" accept=".json,.txt,text/plain,application/json" className="hidden" onChange={(event)=>void importFile(event)}/></label></div></div><textarea value={aiOutput} onChange={(event)=>{setAiOutput(event.target.value);setParseError("")}} className="mt-4 min-h-72 w-full rounded-2xl border border-slate-200 bg-slate-50 p-4 font-mono text-xs leading-6 outline-none focus:border-teal-500 focus:bg-white focus:ring-4 focus:ring-teal-500/10" placeholder={'Tempel hasil AI di sini...\n\n1. Berapakah 2 + 2?\nA. 3\nB. 4\nC. 5\nD. 6\nKunci: B'}/>{parseError&&<p className="mt-3 rounded-xl bg-rose-50 px-4 py-3 text-xs font-semibold leading-5 text-rose-700">{parseError}</p>}<button disabled={!aiOutput.trim()||saving} onClick={()=>void readAndSave()} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-slate-950 py-3 text-sm font-extrabold text-white disabled:opacity-40">{saving?<Loader2 className="animate-spin" size={17}/>:<Sparkles size={17}/>}Baca hasil & simpan ke Soal & Ulangan</button></section>
   </>;
 }
 
-function LegacyScoresView({students}:{students:Student[]}){return <><SectionHeading eyebrow="Evaluasi" title="Rekap nilai siswa" description="Gabungkan nilai ulangan dan nilai manual sesuai bobot semester." action={<button className="flex items-center gap-2 rounded-xl bg-teal-600 px-4 py-2.5 text-xs font-extrabold text-white"><PencilLine size={16}/>Input nilai manual</button>}/><section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="flex flex-wrap gap-2 border-b border-slate-100 p-4"><select className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold"><option>VII A</option><option>VII B</option></select><select className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold"><option>Matematika</option><option>IPA</option></select><span className="ml-auto rounded-xl bg-teal-50 px-3 py-2 text-xs font-black text-teal-700">KKM 75</span></div><div className="overflow-x-auto"><table className="w-full min-w-[700px]"><thead className="bg-slate-50 text-left text-[10px] uppercase tracking-wider text-slate-400"><tr><th className="px-5 py-3">Siswa</th><th className="px-4 py-3">Tugas</th><th className="px-4 py-3">Ulangan</th><th className="px-4 py-3">Nilai manual</th><th className="px-4 py-3">Rata-rata</th><th className="px-5 py-3">Status</th></tr></thead><tbody className="divide-y divide-slate-100">{students.slice(0,5).map((s,i)=>{const avg=[88,72,94,80,76][i]??80;return <tr key={s.id}><td className="px-5 py-4 text-sm font-extrabold">{s.name}<p className="text-[10px] font-normal text-slate-400">{s.nis}</p></td><td className="px-4 py-4 text-sm font-bold">{avg+2}</td><td className="px-4 py-4 text-sm font-bold">{avg-3}</td><td className="px-4 py-4 text-sm font-bold">{avg+1}</td><td className="px-4 py-4"><span className="text-base font-black">{avg}</span></td><td className="px-5 py-4"><span className={`rounded-lg px-2.5 py-1.5 text-xs font-bold ${avg>=75?'bg-emerald-50 text-emerald-700':'bg-rose-50 text-rose-700'}`}>{avg>=75?'Tuntas':'Remedial'}</span></td></tr>})}</tbody></table></div></section></>}
+function LegacyScoresView({students}:{students:Student[]}){return <><SectionHeading eyebrow="Evaluasi" title="Rekap nilai siswa" description="Gabungkan nilai ulangan dan nilai manual sesuai bobot semester." action={<button className="flex items-center gap-2 rounded-xl bg-teal-600 px-4 py-2.5 text-xs font-extrabold text-white"><PencilLine size={16}/>Input nilai manual</button>}/><section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"><div className="flex flex-wrap gap-2 border-b border-slate-100 p-4"><select className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold"><option>V-A</option><option>V-B</option></select><select className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-bold"><option>Matematika</option><option>IPA</option></select><span className="ml-auto rounded-xl bg-teal-50 px-3 py-2 text-xs font-black text-teal-700">KKM 75</span></div><div className="overflow-x-auto"><table className="w-full min-w-[700px]"><thead className="bg-slate-50 text-left text-[10px] uppercase tracking-wider text-slate-400"><tr><th className="px-5 py-3">Siswa</th><th className="px-4 py-3">Tugas</th><th className="px-4 py-3">Ulangan</th><th className="px-4 py-3">Nilai manual</th><th className="px-4 py-3">Rata-rata</th><th className="px-5 py-3">Status</th></tr></thead><tbody className="divide-y divide-slate-100">{students.slice(0,5).map((s,i)=>{const avg=[88,72,94,80,76][i]??80;return <tr key={s.id}><td className="px-5 py-4 text-sm font-extrabold">{s.name}<p className="text-[10px] font-normal text-slate-400">{s.nis}</p></td><td className="px-4 py-4 text-sm font-bold">{avg+2}</td><td className="px-4 py-4 text-sm font-bold">{avg-3}</td><td className="px-4 py-4 text-sm font-bold">{avg+1}</td><td className="px-4 py-4"><span className="text-base font-black">{avg}</span></td><td className="px-5 py-4"><span className={`rounded-lg px-2.5 py-1.5 text-xs font-bold ${avg>=75?'bg-emerald-50 text-emerald-700':'bg-rose-50 text-rose-700'}`}>{avg>=75?'Tuntas':'Remedial'}</span></td></tr>})}</tbody></table></div></section></>}
 
-function LegacyAcademicView(){return <><SectionHeading eyebrow="Konfigurasi" title="Data akademik" description="Atur sekolah, tahun ajaran, semester, dan kelas aktif."/><div className="grid gap-5 lg:grid-cols-2"><ConfigCard icon={School} title="Sekolah utama" value="SMP Harapan Bangsa" detail="NPSN 12345678 · Kota Bandung"/><ConfigCard icon={CalendarDays} title="Periode aktif" value="2026/2027 · Ganjil" detail="13 Juli — 18 Desember 2026"/><ConfigCard icon={GraduationCap} title="Kelas aktif" value="2 kelas · 32 siswa" detail="VII A dan VII B"/><ConfigCard icon={AlarmClock} title="Aturan jam masuk" value="07:00 WIB" detail="Setelah 07:00 tercatat terlambat"/></div></>}
+function LegacyAcademicView(){return <><SectionHeading eyebrow="Konfigurasi" title="Data akademik" description="Atur sekolah, tahun ajaran, semester, dan kelas aktif."/><div className="grid gap-5 lg:grid-cols-2"><ConfigCard icon={School} title="Sekolah utama" value="SMP Harapan Bangsa" detail="NPSN 12345678 · Kota Bandung"/><ConfigCard icon={CalendarDays} title="Periode aktif" value="2026/2027 · Ganjil" detail="13 Juli — 18 Desember 2026"/><ConfigCard icon={GraduationCap} title="Kelas aktif" value="2 kelas · 32 siswa" detail="V-A dan V-B"/><ConfigCard icon={AlarmClock} title="Aturan jam masuk" value="07:00 WIB" detail="Setelah 07:00 tercatat terlambat"/></div></>}
 function ConfigCard({icon:Icon,title,value,detail}:{icon:typeof School;title:string;value:string;detail:string}){return <div className="flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="rounded-2xl bg-teal-50 p-4 text-teal-700"><Icon size={23}/></div><div className="flex-1"><p className="text-xs font-bold text-slate-400">{title}</p><h3 className="mt-1 font-black">{value}</h3><p className="mt-1 text-xs text-slate-500">{detail}</p></div><button className="rounded-lg p-2 text-slate-400 hover:bg-slate-100"><PencilLine size={17}/></button></div>}
 
 function ProfileView({user,demo,setToast}:{user:User|null;demo:boolean;setToast:(t:Toast)=>void}){
@@ -1807,7 +2491,7 @@ function PublicQuizAdvanced(){
 
   useEffect(()=>{
     if(snapshotId==="demo"){
-      setSnapshot({type:"quiz",ownerUid:"demo",examId:"demo-exam",published:true,title:"Quiz Matematika — Persamaan Linear",subject:"Matematika",className:"VII A",chapter:"Persamaan linear",durationMinutes:60,questions:[{question:"Nilai x yang memenuhi 3x + 5 = 20 adalah...",choices:["3","5","7","15"],answerIndex:1,explanation:"3x = 15, sehingga x = 5."}],students:demoStudents.filter((item)=>item.className==="VII A").map(({id,nis,name,className})=>({id,nis,name,className}))});setLoading(false);return;
+      setSnapshot({type:"quiz",ownerUid:"demo",examId:"demo-exam",published:true,title:"Kuis Matematika — Persamaan Linear",subject:"Matematika",className:"V-A",chapter:"Persamaan linear",durationMinutes:60,questions:[{question:"Nilai x yang memenuhi 3x + 5 = 20 adalah...",choices:["3","5","7","15"],answerIndex:1,explanation:"3x = 15, sehingga x = 5."}],students:demoStudents.filter((item)=>item.className==="V-A").map(({id,nis,name,className})=>({id,nis,name,className}))});setLoading(false);return;
     }
     void getDoc(doc(db,"publicSnapshots",snapshotId)).then((result)=>{
       if(!result.exists()||result.data().type!=="quiz"||result.data().published!==true)throw new Error("Ulangan tidak ditemukan atau sudah dinonaktifkan.");
@@ -1889,7 +2573,7 @@ function PublicQuizAdvanced(){
   return <PublicFrame><div className="mx-auto max-w-3xl"><div className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-slate-950 px-5 py-4 text-white"><div><p className="text-[10px] text-slate-400">SOAL {current+1} DARI {quiz.length} · {answeredCount} TERJAWAB</p><p className="text-xs font-bold">{student?.name} · NIS {student?.nis}</p></div><div className={`flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-black ${remaining<=300?'bg-rose-500/20 text-rose-200':'bg-white/10 text-teal-300'}`}><Timer size={17}/>{formatCountdown(remaining)}</div></div><section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8"><p className="text-xs font-black text-teal-600">PERTANYAAN {String(current+1).padStart(2,"0")}</p><h1 className="mt-4 text-xl font-black leading-relaxed">{question.question}</h1><div className="mt-7 space-y-3">{question.choices.map((choice,index)=>{const selected=answers[String(current)]===choice.originalChoiceIndex;return <button key={`${choice.originalChoiceIndex}-${choice.text}`} onClick={()=>void selectAnswer(choice.originalChoiceIndex)} className={`flex w-full items-center gap-3 rounded-xl border p-4 text-left text-sm font-bold transition ${selected?'border-teal-500 bg-teal-50 text-teal-800':'border-slate-200 hover:border-slate-300'}`}><span className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg text-xs font-black ${selected?'bg-teal-600 text-white':'bg-slate-100 text-slate-500'}`}>{String.fromCharCode(65+index)}</span>{choice.text}</button>})}</div><div className="mt-7 flex flex-wrap items-center justify-between gap-3"><button disabled={current===0} onClick={()=>setCurrent((value)=>Math.max(0,value-1))} className="rounded-xl border border-slate-200 px-4 py-3 text-sm font-extrabold disabled:opacity-30"><ArrowLeft className="mr-2 inline" size={15}/>Sebelumnya</button>{current<quiz.length-1?<button onClick={()=>setCurrent((value)=>Math.min(quiz.length-1,value+1))} className="rounded-xl bg-teal-600 px-5 py-3 text-sm font-extrabold text-white">Berikutnya<ChevronRight className="ml-2 inline" size={15}/></button>:<button onClick={()=>void finishQuiz(false)} className="rounded-xl bg-slate-950 px-5 py-3 text-sm font-extrabold text-white">Kirim semua jawaban</button>}</div></section><p className={`mt-4 text-center text-xs font-bold ${violationCount?'text-rose-600':'text-slate-400'}`}>{violationCount} aktivitas keluar/pindah tab tercatat</p></div>{warning&&<div className="fixed inset-0 z-[120] grid place-items-center bg-slate-950/80 p-5"><div className="w-full max-w-md rounded-3xl bg-white p-7 text-center shadow-2xl"><ShieldCheck className="mx-auto text-rose-600" size={42}/><h2 className="mt-4 text-2xl font-black">Peringatan ujian</h2><p className="mt-3 text-sm leading-6 text-slate-600">{warning}</p><button onClick={()=>void enterFullscreen()} className="mt-6 w-full rounded-xl bg-teal-600 py-3 text-sm font-extrabold text-white">Kembali ke fullscreen</button></div></div>}</PublicFrame>;
 }
 
-function PublicQuiz(){const [started,setStarted]=useState(false);const [nis,setNis]=useState("");const [answer,setAnswer]=useState<number|null>(null);const [done,setDone]=useState(false);if(done)return <PublicFrame><div className="mx-auto max-w-xl text-center"><div className="mx-auto grid h-20 w-20 place-items-center rounded-3xl bg-emerald-100 text-emerald-600"><CheckCircle2 size={40}/></div><h1 className="mt-6 text-3xl font-black">Ujian selesai!</h1><p className="mt-2 text-slate-500">Jawaban Anda telah tersimpan.</p><div className="mx-auto mt-8 max-w-sm rounded-2xl bg-slate-950 p-6 text-white"><p className="text-xs text-slate-400">Nilai sementara</p><p className="mt-2 text-5xl font-black text-teal-300">85</p><p className="mt-2 text-xs text-slate-400">17 benar dari 20 soal</p></div></div></PublicFrame>;if(!started)return <PublicFrame><div className="mx-auto max-w-lg rounded-3xl border border-slate-200 bg-white p-6 shadow-xl sm:p-8"><span className="rounded-full bg-sky-50 px-3 py-1.5 text-[10px] font-black text-sky-700">ULANGAN AKTIF</span><h1 className="mt-5 text-2xl font-black">Quiz Matematika — Persamaan Linear</h1><div className="mt-5 grid grid-cols-3 gap-2 text-center">{[['20','Soal'],['60','Menit'],['75','KKM']].map(([v,l])=><div key={l} className="rounded-xl bg-slate-50 p-3"><p className="font-black">{v}</p><p className="text-[10px] text-slate-400">{l}</p></div>)}</div><label className="mt-6 block"><span className="mb-2 block text-xs font-extrabold">Masukkan NIS</span><input value={nis} onChange={(e)=>setNis(e.target.value)} placeholder="Contoh: 24001" className="h-12 w-full rounded-xl border border-slate-200 px-4 outline-none focus:border-teal-500"/></label><div className="mt-4 rounded-xl bg-amber-50 p-3 text-xs leading-5 text-amber-800"><ShieldCheck className="mr-1 inline" size={15}/>Ujian wajib fullscreen. Perpindahan tab dan perangkat akan dicatat.</div><button disabled={!nis} onClick={()=>setStarted(true)} className="mt-5 w-full rounded-xl bg-teal-600 py-3 text-sm font-extrabold text-white disabled:opacity-40">Mulai ujian</button></div></PublicFrame>;return <PublicFrame><div className="mx-auto max-w-3xl"><div className="mb-5 flex items-center justify-between rounded-2xl bg-slate-950 px-5 py-4 text-white"><div><p className="text-[10px] text-slate-400">SOAL 1 DARI 20</p><p className="text-xs font-bold">NIS {nis}</p></div><div className="flex items-center gap-2 rounded-xl bg-white/10 px-3 py-2 text-sm font-black text-teal-300"><Timer size={17}/>59:42</div></div><section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8"><p className="text-xs font-black text-teal-600">PERTANYAAN 01</p><h1 className="mt-4 text-xl font-black leading-relaxed">Nilai x yang memenuhi persamaan 3x + 5 = 20 adalah...</h1><div className="mt-7 space-y-3">{['3','5','7','15'].map((item,i)=><button key={item} onClick={()=>setAnswer(i)} className={`flex w-full items-center gap-3 rounded-xl border p-4 text-left text-sm font-bold transition ${answer===i?'border-teal-500 bg-teal-50 text-teal-800':'border-slate-200 hover:border-slate-300'}`}><span className={`grid h-8 w-8 place-items-center rounded-lg text-xs font-black ${answer===i?'bg-teal-600 text-white':'bg-slate-100 text-slate-500'}`}>{String.fromCharCode(65+i)}</span>{item}</button>)}</div><div className="mt-7 flex justify-end"><button disabled={answer===null} onClick={()=>setDone(true)} className="flex items-center gap-2 rounded-xl bg-teal-600 px-5 py-3 text-sm font-extrabold text-white disabled:opacity-40">Simpan & lanjutkan<ChevronRight size={16}/></button></div></section></div></PublicFrame>}
+function PublicQuiz(){const [started,setStarted]=useState(false);const [nis,setNis]=useState("");const [answer,setAnswer]=useState<number|null>(null);const [done,setDone]=useState(false);if(done)return <PublicFrame><div className="mx-auto max-w-xl text-center"><div className="mx-auto grid h-20 w-20 place-items-center rounded-3xl bg-emerald-100 text-emerald-600"><CheckCircle2 size={40}/></div><h1 className="mt-6 text-3xl font-black">Ujian selesai!</h1><p className="mt-2 text-slate-500">Jawaban Anda telah tersimpan.</p><div className="mx-auto mt-8 max-w-sm rounded-2xl bg-slate-950 p-6 text-white"><p className="text-xs text-slate-400">Nilai sementara</p><p className="mt-2 text-5xl font-black text-teal-300">85</p><p className="mt-2 text-xs text-slate-400">17 benar dari 20 soal</p></div></div></PublicFrame>;if(!started)return <PublicFrame><div className="mx-auto max-w-lg rounded-3xl border border-slate-200 bg-white p-6 shadow-xl sm:p-8"><span className="rounded-full bg-sky-50 px-3 py-1.5 text-[10px] font-black text-sky-700">ULANGAN AKTIF</span><h1 className="mt-5 text-2xl font-black">Kuis Matematika — Persamaan Linear</h1><div className="mt-5 grid grid-cols-3 gap-2 text-center">{[['20','Soal'],['60','Menit'],['75','KKM']].map(([v,l])=><div key={l} className="rounded-xl bg-slate-50 p-3"><p className="font-black">{v}</p><p className="text-[10px] text-slate-400">{l}</p></div>)}</div><label className="mt-6 block"><span className="mb-2 block text-xs font-extrabold">Masukkan NIS</span><input value={nis} onChange={(e)=>setNis(e.target.value)} placeholder="Contoh: 24001" className="h-12 w-full rounded-xl border border-slate-200 px-4 outline-none focus:border-teal-500"/></label><div className="mt-4 rounded-xl bg-amber-50 p-3 text-xs leading-5 text-amber-800"><ShieldCheck className="mr-1 inline" size={15}/>Ujian wajib fullscreen. Perpindahan tab dan perangkat akan dicatat.</div><button disabled={!nis} onClick={()=>setStarted(true)} className="mt-5 w-full rounded-xl bg-teal-600 py-3 text-sm font-extrabold text-white disabled:opacity-40">Mulai ujian</button></div></PublicFrame>;return <PublicFrame><div className="mx-auto max-w-3xl"><div className="mb-5 flex items-center justify-between rounded-2xl bg-slate-950 px-5 py-4 text-white"><div><p className="text-[10px] text-slate-400">SOAL 1 DARI 20</p><p className="text-xs font-bold">NIS {nis}</p></div><div className="flex items-center gap-2 rounded-xl bg-white/10 px-3 py-2 text-sm font-black text-teal-300"><Timer size={17}/>59:42</div></div><section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8"><p className="text-xs font-black text-teal-600">PERTANYAAN 01</p><h1 className="mt-4 text-xl font-black leading-relaxed">Nilai x yang memenuhi persamaan 3x + 5 = 20 adalah...</h1><div className="mt-7 space-y-3">{['3','5','7','15'].map((item,i)=><button key={item} onClick={()=>setAnswer(i)} className={`flex w-full items-center gap-3 rounded-xl border p-4 text-left text-sm font-bold transition ${answer===i?'border-teal-500 bg-teal-50 text-teal-800':'border-slate-200 hover:border-slate-300'}`}><span className={`grid h-8 w-8 place-items-center rounded-lg text-xs font-black ${answer===i?'bg-teal-600 text-white':'bg-slate-100 text-slate-500'}`}>{String.fromCharCode(65+i)}</span>{item}</button>)}</div><div className="mt-7 flex justify-end"><button disabled={answer===null} onClick={()=>setDone(true)} className="flex items-center gap-2 rounded-xl bg-teal-600 px-5 py-3 text-sm font-extrabold text-white disabled:opacity-40">Simpan & lanjutkan<ChevronRight size={16}/></button></div></section></div></PublicFrame>}
 function PublicTask(){
   const pathname=usePathname();
   const snapshotId=decodeURIComponent(pathname.split("/").filter(Boolean).at(-1)??"demo");
@@ -1979,36 +2663,63 @@ function AbsenceConfirmationForm(){
 function GuardianDataForm() {
   const pathname = usePathname();
   const snapshotId = decodeURIComponent(pathname.split("/").filter(Boolean).at(-1) ?? "demo");
-  const [snapshot, setSnapshot] = useState<{ ownerUid: string; className: string; students: Student[] } | null>(null);
+  const [snapshot, setSnapshot] = useState<{ ownerUid: string; schoolName: string; academicYear: string; className: string; students: Student[] } | null>(null);
   const [nis, setNis] = useState("");
   const [guardian, setGuardian] = useState("");
   const [phone, setPhone] = useState("");
-  const [student, setStudent] = useState<Student | null>(null);
+  const [student, setStudent] = useState<any>(null);
+  const [photo, setPhoto] = useState<File | null>(null);
+  const [photoThumbnail, setPhotoThumbnail] = useState<File | null>(null);
+  const [photoPreview, setPhotoPreview] = useState("");
+  const [photoBusy, setPhotoBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState("");
 
+  useEffect(() => () => { if (photoPreview) URL.revokeObjectURL(photoPreview); }, [photoPreview]);
   useEffect(() => {
     if (snapshotId === "demo") {
-      setSnapshot({ ownerUid: "demo", className: "VII A", students: demoStudents.filter((item) => item.className === "VII A") });
+      setSnapshot({ ownerUid: "demo", schoolName: "Sekolah Demo SMART-ATT", academicYear: "2026/2027", className: "V-A", students: demoStudents.filter((item) => item.className === "V-A") });
       setLoading(false);
       return;
     }
     void getDoc(doc(db, "publicSnapshots", snapshotId)).then((result) => {
       if (!result.exists() || result.data().published !== true || result.data().type !== "guardian") throw new Error("Link pendataan tidak ditemukan atau sudah dinonaktifkan.");
-      const data = result.data() as { ownerUid: string; className: string; students: Student[] };
-      setSnapshot({ ownerUid: data.ownerUid, className: data.className, students: data.students ?? [] });
+      const data = result.data() as { ownerUid: string; schoolName?: string; academicYear?: string; className: string; students: Student[] };
+      setSnapshot({ ownerUid: data.ownerUid, schoolName: data.schoolName ?? "SMART-ATT", academicYear: data.academicYear ?? "-", className: data.className, students: data.students ?? [] });
     }).catch((reason) => setError(reason instanceof Error ? reason.message : "Link tidak dapat dibuka."))
       .finally(() => setLoading(false));
   }, [snapshotId]);
 
   function findStudent() {
-    setError(""); setStudent(null);
+    setError(""); setStudent(null); setGuardian(""); setPhone(""); setPhoto(null); setPhotoThumbnail(null); setPhotoPreview("");
     if (!snapshot) return;
     const match = snapshot.students.find((item) => item.nis.trim() === nis.trim());
     if (!match) { setError("NIS tidak ditemukan pada data kelas ini."); return; }
     setStudent(match);
+  }
+
+  async function chooseGuardianPhoto(file: File | null) {
+    if (!file) return;
+    const supported = ["image/jpeg", "image/png", "image/webp"].includes(file.type) || /\.(jpe?g|png|webp)$/i.test(file.name);
+    if (!supported) { setError("Gunakan foto JPG, PNG, atau WebP."); return; }
+    if (file.size > 15 * 1024 * 1024) { setError("Ukuran foto awal maksimal 15 MB."); return; }
+    setPhotoBusy(true); setError("");
+    try {
+      const resized = await resizeStudentPhoto(file, 500 * 1024);
+      const thumbnail = await createStudentThumbnail(resized, "3:4", 1, 0, 0, 120 * 1024);
+      setPhoto(resized); setPhotoThumbnail(thumbnail); setPhotoPreview(URL.createObjectURL(thumbnail));
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Foto gagal diproses."); }
+    finally { setPhotoBusy(false); }
+  }
+
+  async function uploadGuardianPhoto(file: File, variant: "photo" | "thumbnail") {
+    if (!student) throw new Error("Data siswa belum dipilih.");
+    const form = new FormData(); form.append("file", file); form.append("snapshotId", snapshotId); form.append("studentId", student.id); form.append("variant", variant);
+    const response = await fetch("/api/storage/public-guardian-photo", { method: "POST", body: form });
+    if (!response.ok) { const result = await response.json().catch(() => null) as { error?: string } | null; throw new Error(result?.error ?? "Foto gagal diunggah."); }
+    return (await response.json() as { key: string }).key;
   }
 
   async function submitGuardian(event: React.FormEvent) {
@@ -2020,29 +2731,24 @@ function GuardianDataForm() {
     setSubmitting(true); setError("");
     try {
       if (snapshotId !== "demo") {
+        const photoPayload = photo && photoThumbnail ? await Promise.all([uploadGuardianPhoto(photo, "photo"), uploadGuardianPhoto(photoThumbnail, "thumbnail")]).then(([photoKey, photoThumbnailKey]) => ({ photoKey, photoThumbnailKey, photoAspect: "3:4" as const })) : {};
         await addDoc(collection(db, "publicResponses"), {
-          snapshotId,
-          ownerUid: snapshot.ownerUid,
-          studentId: student.id,
-          nis: student.nis,
-          studentName: student.name,
-          className: student.className,
-          guardian: guardian.trim(),
-          phone: normalizedPhone,
-          status: "pending",
-          createdAt: serverTimestamp(),
+          snapshotId, ownerUid: snapshot.ownerUid, studentId: student.id, attendanceNumber: student.attendanceNumber ?? "", nis: student.nis, studentName: student.name, className: student.className,
+          guardian: guardian.trim(), phone: normalizedPhone, ...photoPayload, status: "pending", createdAt: serverTimestamp(),
         });
       }
       setDone(true);
-    } catch { setError("Data belum dapat dikirim. Silakan coba kembali."); }
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Data belum dapat dikirim. Silakan coba kembali."); }
     finally { setSubmitting(false); }
   }
 
   if (loading) return <PublicFrame><div className="grid min-h-64 place-items-center"><Loader2 className="animate-spin text-teal-600" size={30}/></div></PublicFrame>;
-  if (done) return <PublicFrame><div className="mx-auto max-w-md rounded-3xl border border-emerald-200 bg-white p-8 text-center shadow-xl"><CheckCircle2 className="mx-auto text-emerald-600" size={60}/><h1 className="mt-5 text-2xl font-black">Data berhasil dikirim</h1><p className="mt-2 text-sm leading-6 text-slate-500">Terima kasih. Nama wali dan nomor WhatsApp akan otomatis masuk ke data siswa.</p></div></PublicFrame>;
+  if (done) return <PublicFrame><div className="mx-auto max-w-md rounded-3xl border border-emerald-200 bg-white p-8 text-center shadow-xl"><CheckCircle2 className="mx-auto text-emerald-600" size={60}/><h1 className="mt-5 text-2xl font-black">Data berhasil dikirim</h1><p className="mt-2 text-sm leading-6 text-slate-500">Terima kasih. Data wali{photo ? " dan foto siswa" : ""} akan otomatis masuk setelah guru membuka SMART-ATT.</p></div></PublicFrame>;
   if (!snapshot) return <PublicFrame><div className="mx-auto max-w-md rounded-3xl border border-rose-200 bg-white p-8 text-center shadow-xl"><XCircle className="mx-auto text-rose-600" size={55}/><h1 className="mt-5 text-xl font-black">Link tidak tersedia</h1><p className="mt-2 text-sm text-slate-500">{error}</p></div></PublicFrame>;
+  if (student && error) return <PublicFrame><div className="mx-auto max-w-md rounded-3xl border border-rose-200 bg-white p-8 text-center shadow-xl"><XCircle className="mx-auto text-rose-600" size={55}/><h1 className="mt-5 text-xl font-black">Data belum terkirim</h1><p className="mt-2 text-sm leading-6 text-slate-600">{error}</p><button type="button" onClick={() => setError("")} className="mt-6 w-full rounded-xl bg-slate-950 py-3 text-sm font-extrabold text-white">Kembali ke formulir</button></div></PublicFrame>;
+  if (student) return <PublicFrame><div className="mx-auto max-w-lg rounded-3xl border border-slate-200 bg-white p-6 shadow-xl sm:p-8"><p className="text-xs font-black uppercase tracking-wider text-teal-600">Pendataan Wali Murid · {snapshot.className}</p><h1 className="mt-2 text-2xl font-black">Lengkapi data wali siswa</h1><p className="mt-2 text-sm leading-6 text-slate-500">Periksa kartu siswa, lalu lengkapi nama wali dan nomor WhatsApp.</p><div className="mt-6"><Field label="NIS" value={nis} onChange={setNis} placeholder="Contoh: 20260101" required/></div><button onClick={findStudent} className="mt-3 w-full rounded-xl bg-slate-950 py-3 text-sm font-extrabold text-white">Cari ulang siswa</button><form onSubmit={submitGuardian} className="mt-6 space-y-5 border-t border-slate-100 pt-6"><StudentQrCard student={student} schoolName={snapshot.schoolName} academicYear={snapshot.academicYear} template="photo" photoSrc={photoPreview}/><div><p className="text-xs font-extrabold text-slate-700">Foto siswa <span className="font-normal text-slate-400">(opsional)</span></p><div className="mt-2 grid grid-cols-2 gap-3"><label className="flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-3 text-xs font-black text-slate-700"><ImagePlus size={16}/>Pilih dari galeri<input type="file" accept="image/jpeg,image/png,image/webp" className="hidden" onChange={(event) => void chooseGuardianPhoto(event.target.files?.[0] ?? null)}/></label><label className="flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-sky-600 px-3 py-3 text-xs font-black text-white"><Camera size={16}/>Foto langsung<input type="file" accept="image/*" capture="environment" className="hidden" onChange={(event) => void chooseGuardianPhoto(event.target.files?.[0] ?? null)}/></label></div>{photoBusy&&<p className="mt-2 flex items-center gap-2 text-[10px] font-bold text-sky-700"><Loader2 className="animate-spin" size={13}/>Memproses foto...</p>}</div><Field label="Nama orang tua / wali" value={guardian} onChange={setGuardian} placeholder="Nama lengkap wali" required/><Field label="Nomor WhatsApp aktif" value={phone} onChange={setPhone} placeholder="Contoh: 081234567890" required/><p className="rounded-xl bg-sky-50 p-3 text-[11px] leading-5 text-sky-700">Nomor WhatsApp digunakan sekolah untuk informasi kehadiran dan komunikasi wali kelas.</p><button disabled={submitting||photoBusy} className="flex w-full items-center justify-center gap-2 rounded-xl bg-teal-600 py-3 text-sm font-extrabold text-white disabled:opacity-60">{submitting?<Loader2 className="animate-spin" size={17}/>:<Send size={17}/>}Kirim data wali</button></form></div></PublicFrame>;
 
-  return <PublicFrame><div className="mx-auto max-w-lg rounded-3xl border border-slate-200 bg-white p-6 shadow-xl sm:p-8"><p className="text-xs font-black uppercase tracking-wider text-teal-600">Pendataan Wali Murid · {snapshot.className}</p><h1 className="mt-2 text-2xl font-black">Lengkapi data wali siswa</h1><p className="mt-2 text-sm leading-6 text-slate-500">Masukkan NIS sesuai data sekolah untuk menemukan nama siswa.</p><div className="mt-6"><Field label="NIS" value={nis} onChange={setNis} placeholder="Contoh: 20260101" required/></div><button onClick={findStudent} className="mt-3 w-full rounded-xl bg-slate-950 py-3 text-sm font-extrabold text-white">Cari data siswa</button>{error&&<p className="mt-4 rounded-xl bg-rose-50 p-3 text-xs font-bold text-rose-700">{error}</p>}{student&&<form onSubmit={submitGuardian} className="mt-6 space-y-4 border-t border-slate-100 pt-6"><div className="rounded-xl bg-teal-50 p-4"><p className="text-[10px] font-black uppercase tracking-wider text-teal-600">Data ditemukan</p><p className="mt-1 font-black text-teal-950">{student.name}</p><p className="mt-1 text-xs text-teal-700">NIS {student.nis} · {student.className}</p></div><Field label="Nama orang tua / wali" value={guardian} onChange={setGuardian} placeholder="Nama lengkap wali" required/><Field label="Nomor WhatsApp aktif" value={phone} onChange={setPhone} placeholder="Contoh: 081234567890" required/><p className="rounded-xl bg-sky-50 p-3 text-[11px] leading-5 text-sky-700">Nomor WhatsApp digunakan sekolah untuk informasi kehadiran dan komunikasi wali kelas.</p><button disabled={submitting} className="flex w-full items-center justify-center gap-2 rounded-xl bg-teal-600 py-3 text-sm font-extrabold text-white disabled:opacity-60">{submitting&&<Loader2 className="animate-spin" size={17}/>}Kirim data wali</button></form>}</div></PublicFrame>;
+  return <PublicFrame><div className="mx-auto max-w-lg rounded-3xl border border-slate-200 bg-white p-6 shadow-xl sm:p-8"><p className="text-xs font-black uppercase tracking-wider text-teal-600">Pendataan Wali Murid · {snapshot.className}</p><h1 className="mt-2 text-2xl font-black">Lengkapi data wali siswa</h1><p className="mt-2 text-sm leading-6 text-slate-500">Masukkan NIS sesuai data sekolah untuk menemukan siswa.</p><div className="mt-6"><Field label="NIS" value={nis} onChange={setNis} placeholder="Contoh: 20260101" required/></div><button onClick={findStudent} className="mt-3 w-full rounded-xl bg-slate-950 py-3 text-sm font-extrabold text-white">Cari data siswa</button>{error&&<p className="mt-4 rounded-xl bg-rose-50 p-3 text-xs font-bold text-rose-700">{error}</p>}{student&&<form onSubmit={submitGuardian} className="mt-6 space-y-5 border-t border-slate-100 pt-6"><section className="overflow-hidden rounded-2xl border border-sky-200 bg-gradient-to-br from-sky-300 via-sky-200 to-white p-4 shadow-sm"><div className="flex items-center justify-between"><div className="flex items-center gap-2"><img src="/logo.png" alt="SMART-ATT" className="h-8 w-8 object-contain"/><div><p className="text-[10px] font-black tracking-wide text-sky-950">KARTU SISWA</p><p className="max-w-48 truncate text-[9px] font-bold text-sky-800">{snapshot.schoolName}</p></div></div><span className="text-[9px] font-black text-sky-900">SMART-ATT</span></div><div className="mt-4 grid grid-cols-[86px_1fr] gap-4"><div className="grid aspect-[3/4] overflow-hidden border-2 border-white bg-white/70 shadow-sm">{photoPreview?<img src={photoPreview} alt={`Foto ${student.name}`} className="h-full w-full object-cover"/>:<div className="grid place-items-center text-center text-sky-700"><CircleUserRound size={35}/><span className="px-1 text-[8px] font-bold">Belum ada foto</span></div>}</div><div className="min-w-0 self-center"><p className="text-lg font-black leading-tight text-slate-950">{student.name}</p><dl className="mt-3 grid grid-cols-[42px_1fr] gap-y-1 text-[10px] text-slate-700"><dt className="font-black">NIS</dt><dd>: {student.nis}</dd><dt className="font-black">Kelas</dt><dd>: {student.className}</dd>{student.attendanceNumber&&<><dt className="font-black">Absen</dt><dd>: {student.attendanceNumber}</dd></>}</dl></div></div></section><div><p className="text-xs font-extrabold text-slate-700">Foto siswa <span className="font-normal text-slate-400">(opsional)</span></p><div className="mt-2 grid grid-cols-2 gap-3"><label className="flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-3 text-xs font-black text-slate-700"><ImagePlus size={16}/>Pilih dari galeri<input type="file" accept="image/jpeg,image/png,image/webp" className="hidden" onChange={(event) => void chooseGuardianPhoto(event.target.files?.[0] ?? null)}/></label><label className="flex cursor-pointer items-center justify-center gap-2 rounded-xl bg-sky-600 px-3 py-3 text-xs font-black text-white"><Camera size={16}/>Foto langsung<input type="file" accept="image/*" capture="environment" className="hidden" onChange={(event) => void chooseGuardianPhoto(event.target.files?.[0] ?? null)}/></label></div>{photoBusy&&<p className="mt-2 flex items-center gap-2 text-[10px] font-bold text-sky-700"><Loader2 className="animate-spin" size={13}/>Memproses foto...</p>}</div><Field label="Nama orang tua / wali" value={guardian} onChange={setGuardian} placeholder="Nama lengkap wali" required/><Field label="Nomor WhatsApp aktif" value={phone} onChange={setPhone} placeholder="Contoh: 081234567890" required/><p className="rounded-xl bg-sky-50 p-3 text-[11px] leading-5 text-sky-700">Nomor WhatsApp digunakan sekolah untuk informasi kehadiran dan komunikasi wali kelas.</p><button disabled={submitting||photoBusy} className="flex w-full items-center justify-center gap-2 rounded-xl bg-teal-600 py-3 text-sm font-extrabold text-white disabled:opacity-60">{submitting?<Loader2 className="animate-spin" size={17}/>:<Send size={17}/>}Kirim data wali</button></form>}</div></PublicFrame>;
 }
 function PublicFrame({children}:{children:React.ReactNode}){return <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,#e8faf7,transparent_35%),linear-gradient(135deg,#f7fbff,#fffaf0)] px-4 py-8 sm:py-12"><header className="mx-auto mb-10 flex max-w-5xl items-center justify-between"><Logo/><span className="hidden rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold text-slate-500 sm:block">Portal Publik Siswa</span></header>{children}</main>}
 
