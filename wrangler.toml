@@ -3,6 +3,13 @@ compatibility_date = "2026-07-06"
 compatibility_flags = ["nodejs_compat"]
 pages_build_output_dir = ".pages-deploy"
 
+[browser]
+binding = "BROWSER"
+
+[vars]
+PDF_LINK_TTL_DAYS = "3"
+PUBLIC_APP_URL = "https://smart-att.web.id"
+
 [[r2_buckets]]
 binding = "SMARTATT_R2"
 bucket_name = "smartatt-storage"

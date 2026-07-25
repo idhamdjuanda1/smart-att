@@ -32,6 +32,7 @@ Endpoint S3 dan Account ID hanya diperlukan oleh tooling server/deployment, buka
 
 ## Halaman publik
 
+- `/link`, `/quiz`, atau `/soal` — portal kode singkat untuk membuka ulangan
 - `/public/quiz/demo` — alur ujian siswa tanpa login
 - `/public/task/demo` — tampilan tugas publik
 - `/public/guardian/demo` — konfirmasi wali murid
@@ -39,3 +40,5 @@ Endpoint S3 dan Account ID hanya diperlukan oleh tooling server/deployment, buka
 ## Catatan produksi
 
 Sebelum digunakan sekolah, lengkapi data profil, periode akademik, kelas, serta indeks Firestore yang diminta konsol. Aktifkan App Check dan deploy rules sebelum mengundang pengguna nyata.
+
+Domain publik resmi adalah `https://smart-att.web.id`. Link pendek ulangan selalu memakai domain ini meskipun dashboard tidak sengaja dibuka melalui subdomain Cloudflare Pages.

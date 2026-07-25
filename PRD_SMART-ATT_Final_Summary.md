@@ -32,6 +32,7 @@ SMART-ATT adalah webapp sekolah untuk absensi QR, manajemen siswa, komunikasi wa
 - Membuat soal dan ulangan.
 - Generate prompt AI untuk pembuatan soal.
 - Monitoring ujian dan log aktivitas siswa.
+- Menutup ulangan lebih awal ketika seluruh siswa yang hadir sudah selesai.
 
 ### Siswa
 - Mengikuti quiz/ulangan melalui link publish.
@@ -105,7 +106,14 @@ SMART-ATT adalah webapp sekolah untuk absensi QR, manajemen siswa, komunikasi wa
 - Link publish berisi countdown sebelum ujian dimulai.
 - Siswa memasukkan NIS untuk mengerjakan.
 - Ujian otomatis tertutup setelah durasi selesai.
+- Guru dapat menekan **Matikan ulangan** untuk mengakhiri ujian lebih awal.
+- Jawaban terakhir peserta yang masih aktif langsung dinilai, sedangkan siswa yang tidak pernah ikut tidak dihitung sebagai peserta.
+- Setelah dimatikan guru, hasil, ranking, jawaban, dan pembahasan langsung dapat dilihat oleh siswa yang mengikuti ujian.
 - Siswa yang sudah selesai hanya dapat melihat hasil, jawaban, dan pembahasan.
+- Setiap publikasi ulangan memiliki kode akses alfanumerik unik sepanjang 10 karakter.
+- Siswa dapat mengetik kode melalui `smart-att.web.id/link`, `/quiz`, atau `/soal`; link langsung pendek memakai format `smart-att.web.id/link/{kode}`.
+- Kode dipesan secara transaksional di Firestore sehingga tidak dapat dipakai oleh dua ulangan atau dua pengguna yang berbeda.
+- ID snapshot dan link publik lama tetap dapat digunakan untuk menjaga kompatibilitas data existing.
 
 ### 9. Keamanan Ujian
 - Random urutan soal per siswa.
@@ -147,7 +155,8 @@ SMART-ATT adalah webapp sekolah untuk absensi QR, manajemen siswa, komunikasi wa
 
 ### Cloudflare Pages
 - Webapp dideploy ke Cloudflare Pages.
-- Link produksi: `https://smart-att.pages.dev/`.
+- Domain produksi resmi: `https://smart-att.web.id/`.
+- Subdomain `pages.dev` hanya menjadi alamat teknis deployment dan tidak digunakan pada link yang dibagikan kepada siswa.
 
 ## Prinsip Data
 - Data operasional tidak bergantung pada localStorage.
@@ -158,3 +167,44 @@ SMART-ATT adalah webapp sekolah untuk absensi QR, manajemen siswa, komunikasi wa
 
 ## Status Akhir yang Diharapkan
 SMART-ATT siap digunakan sebagai webapp sekolah untuk absensi QR, tugas, dan ujian online. Guru dapat mengelola data sekolah dari HP atau desktop, siswa dapat mengikuti ujian melalui link, wali murid dapat mengisi konfirmasi, dan superadmin dapat mengatur akun serta token aktivasi.
+
+## Pengembangan Multi-Mode dan RBAC (Juli 2026)
+
+### Kompatibilitas
+- Field baru `accountType` memiliki nilai `individual` atau `school`.
+- Dokumen akun lama yang tidak memiliki `accountType` selalu diperlakukan sebagai `individual`.
+- Token aktivasi memiliki `accountType` yang sama dengan akun tujuan. Token individual (`SATT-I-...`) tidak dapat dipakai akun sekolah dan token sekolah (`SATT-S-...`) tidak dapat dipakai akun individual.
+- Token lama yang belum memiliki `accountType` tetap berlaku sebagai token individual agar akun Guru SD existing tidak memerlukan migrasi manual.
+- Data dan UI akun individual tetap menggunakan jalur lama `users/{uid}/...`; tidak ada migrasi manual dan tidak ada perubahan flow Guru SD existing.
+- Data mode sekolah memakai workspace terpisah `schools/{schoolId}/...` agar tidak bercampur dengan data individual.
+
+### Role Sekolah
+- `principal` (Kepala Sekolah): akses penuh profil sekolah, tahun ajaran, kelas, mapel, guru, siswa, jadwal, penugasan, absensi, quiz, nilai, laporan, dan pengaturan.
+- `administration` (Tata Usaha): administrasi profil sekolah, tahun ajaran, kelas, mapel, guru, siswa, jadwal, penugasan, rekap absensi, nilai, dan laporan; tidak mengendalikan ujian siswa.
+- `teacher` (Guru): hanya Dashboard, Kelas Saya, Absensi, Quiz, Nilai, dan Profil.
+- Menu tanpa izin tidak dirender. Firestore Rules mengulang pemeriksaan role dan penugasan kelas; keamanan tidak bergantung pada tombol atau sidebar.
+
+### Onboarding dan Akun Guru
+- Registrasi menyediakan pilihan Guru SD Perorangan atau Per Sekolah.
+- Administrator sekolah memilih Kepala Sekolah atau Tata Usaha pada login pertama.
+- Guru dibuat oleh Kepala Sekolah/Tata Usaha menggunakan nama, email, password awal, mata pelajaran, dan daftar kelas.
+- Password dibuat langsung melalui Firebase Authentication sekunder dan tidak pernah disimpan di Firestore.
+- Penghapusan guru berupa penonaktifan akses. Akun Firebase yang masih ada tetap tidak dapat membaca workspace karena membership menjadi nonaktif.
+
+### Model Data Sekolah
+- `schools/{schoolId}`: profil sekolah.
+- `schools/{schoolId}/members/{uid}`: role, status, mapel, dan kelas penugasan.
+- `schools/{schoolId}/academicYears/{academicYearId}`: periode akademik sekolah; dokumen `settings/academic` tetap dipertahankan untuk kompatibilitas.
+- `classes`, `subjects`, `students`, `schedules`: data induk bersama.
+- `teachingAssignments`: kebutuhan guru–mata pelajaran–kelas beserta jumlah JP per minggu.
+- `attendanceSessions`, `exams`, `manualGrades`, `settings`: data operasional bersama dengan pembatasan kelas untuk guru.
+- Public snapshot ujian tetap memakai `ownerUid` dan menambahkan `schoolId` secara opsional. Data individual lama tetap valid tanpa field tersebut.
+
+### ERP Penugasan dan Jadwal
+- Admin mengikuti setup terpandu: Guru → Kelas → Mata Pelajaran → Siswa → Penugasan Mengajar → Jadwal.
+- Kelas SMP dapat dibuat massal, misalnya VII A sampai IX E. Setiap kelas memiliki ruang kerja siswa, import CSV, dan jadwal kelas.
+- Penugasan menyimpan guru, mata pelajaran, kelas, dan kebutuhan JP per minggu. Penugasan tanpa guru tetap dapat disimpan sebagai kebutuhan dan ditampilkan sebagai kekurangan.
+- Pemeriksaan kesiapan menghitung jumlah kelas, mapel, guru, total JP, kelas tanpa penugasan, penugasan tanpa guru, dan guru yang melebihi kapasitas slot.
+- Generator jadwal membuat draft dengan aturan tidak ada guru atau kelas yang berada pada dua pelajaran di waktu yang sama. Kekurangan slot membatalkan penyimpanan draft dan menghasilkan peringatan.
+- Draft dapat dipindahkan dengan drag-and-drop atau diedit manual; setiap perubahan divalidasi ulang terhadap bentrok.
+- Jadwal baru terlihat pada menu Jadwal Saya milik guru setelah admin menerapkannya. Guru tidak dapat mengubah jadwal.

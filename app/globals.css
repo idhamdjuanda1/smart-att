@@ -220,6 +220,10 @@ body {
     break-inside: avoid !important;
     page-break-inside: avoid !important;
   }
+  .student-qr-card, .student-qr-card * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
   .student-qr-code { width: 18mm !important; height: 18mm !important; }
   .student-qr-logo { width: 7mm !important; height: 7mm !important; }
   .student-qr-watermark { width: 20mm !important; height: 20mm !important; }

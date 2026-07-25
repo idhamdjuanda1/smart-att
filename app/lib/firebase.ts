@@ -3,7 +3,7 @@ import { getApps, initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 
-const firebaseConfig = {
+export const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY ?? "AIzaSyD2FV_FSGtqD-u7BQtxLpRfSZZqOTXJqcQ",
   authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN ?? "smart-att-90ef9.firebaseapp.com",
   projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ?? "smart-att-90ef9",
@@ -22,4 +22,3 @@ if (typeof window !== "undefined") {
     if (supported) getAnalytics(firebaseApp);
   });
 }
-

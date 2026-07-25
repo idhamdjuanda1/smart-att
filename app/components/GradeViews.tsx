@@ -2,9 +2,10 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { User } from "firebase/auth";
-import { addDoc, collection, deleteDoc, doc, onSnapshot, query, serverTimestamp, setDoc, updateDoc, where } from "firebase/firestore";
+import { addDoc, collection, deleteDoc, doc, onSnapshot, query, serverTimestamp, setDoc, updateDoc, where, type DocumentData, type QueryDocumentSnapshot } from "firebase/firestore";
 import { BarChart3, Check, Download, GraduationCap, ListChecks, Loader2, PencilLine, Plus, Printer, RefreshCcw, School, Search, Settings, Share2, Trash2, Users } from "lucide-react";
 import { db } from "../lib/firebase";
+import { workspaceCollection, workspaceDoc, type WorkspaceScope } from "../lib/workspace";
 
 type Student = { id: string; nis: string; name: string; className: string };
 type Toast = { message: string; tone: "success" | "error" } | null;
@@ -15,7 +16,7 @@ type Exam = { id: string; title: string; subjectId?: string; subject?: string; c
 type Subject = { id: string; name: string; category?: string; color?: string };
 type Attempt = { id: string; examId: string; studentId: string; nis: string; studentName: string; className: string; status: string; score?: number };
 type AcademicSettings = { schoolName: string; academicYear: string; semester: "Ganjil" | "Genap"; classNames: string[]; entryTime: string; kkm: number };
-type CommonProps = { user: User | null; demo: boolean; students: Student[]; setToast: (value: Toast) => void };
+type CommonProps = { user: User | null; demo: boolean; students: Student[]; setToast: (value: Toast) => void; scope?: WorkspaceScope; allowedClassNames?: string[] };
 
 const categories: { key: GradeCategory; label: string; description: string }[] = [
   { key: "task", label: "Tugas", description: "Tugas aplikasi dan tugas offline" },
@@ -79,7 +80,16 @@ function examCategory(exam?: Exam): GradeCategory {
 function selectClassNames(students: Student[], academic: AcademicSettings) { return Array.from(new Set([...academic.classNames, ...students.map((item) => item.className)].filter(Boolean))).sort(); }
 function FieldLabel({ children }: { children: React.ReactNode }) { return <span className="mb-2 block text-xs font-extrabold text-slate-700">{children}</span>; }
 
-export function ScoresView({ user, demo, students, setToast }: CommonProps) {
+function subscribeByClass(scope:WorkspaceScope,name:string,allowed:string[]|undefined,onDocuments:(documents:QueryDocumentSnapshot<DocumentData>[])=>void){
+  if(scope.root!=="schools"||!allowed)return onSnapshot(workspaceCollection(scope,name),(snapshot)=>onDocuments(snapshot.docs));
+  if(!allowed.length){onDocuments([]);return()=>undefined;}
+  const groups=new Map<string,QueryDocumentSnapshot<DocumentData>[]>();
+  const stops=allowed.map((className)=>onSnapshot(query(workspaceCollection(scope,name),where("className","==",className)),(snapshot)=>{groups.set(className,snapshot.docs);onDocuments(Array.from(groups.values()).flat())}));
+  return()=>stops.forEach((stop)=>stop());
+}
+
+export function ScoresView({ user, demo, students, setToast, scope, allowedClassNames }: CommonProps) {
+  const dataScope: WorkspaceScope | null = scope ?? (user ? { root: "users", id: user.uid } : null);
   const [tab, setTab] = useState<"dashboard" | "student" | "subject" | "manual" | "settings" | "recap">("dashboard");
   const [weights, setWeights] = useState<GradeWeights>(defaultWeights);
   const [academic, setAcademic] = useState<AcademicSettings>(defaultAcademic);
@@ -113,22 +123,35 @@ export function ScoresView({ user, demo, students, setToast }: CommonProps) {
   const effectiveSelectedSubject = subjectNames.includes(selectedSubject) ? selectedSubject : subjectNames[0] ?? "";
   useEffect(() => {
     if (demo) { const demoGrades = students.flatMap((student, studentIndex) => defaultSubjects.map((subject, subjectIndex) => ({ id: `${student.id}-${subject.id}`, className: student.className, subject: subject.name, category: "summative" as GradeCategory, assessmentType: "daily_test", name: `Nilai ${subject.name}`, studentId: student.id, studentName: student.name, nis: student.nis, score: 82 + ((studentIndex + subjectIndex * 3) % 14), notes: "", createdAtMs: Date.now() - subjectIndex * 86400000 }))); setWeights(defaultWeights); setAcademic(defaultAcademic); setManualGrades(demoGrades); setExams([]); setAttempts([]); setSubjects(defaultSubjects); return; }
-    if (!user) return;
+    if (!user || !dataScope) return;
     const stops = [
-      onSnapshot(doc(db, "users", user.uid, "settings", "grades"), (snapshot) => setWeights(normalizeWeights(snapshot.exists() ? snapshot.data().weights as Partial<GradeWeights> : undefined))),
-      onSnapshot(doc(db, "users", user.uid, "settings", "academic"), (snapshot) => setAcademic(normalizeAcademic(snapshot.exists() ? snapshot.data() as Partial<AcademicSettings> : undefined))),
-      onSnapshot(collection(db, "users", user.uid, "manualGrades"), (snapshot) => setManualGrades(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as ManualGrade)).sort((a, b) => b.createdAtMs - a.createdAtMs))),
-      onSnapshot(collection(db, "users", user.uid, "exams"), (snapshot) => setExams(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as Exam)))),
-      onSnapshot(collection(db, "users", user.uid, "subjects"), (snapshot) => setSubjects([...defaultSubjects, ...snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as Subject))])),
-      onSnapshot(query(collection(db, "publicQuizAttempts"), where("ownerUid", "==", user.uid)), (snapshot) => setAttempts(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as Attempt)).filter((item) => item.status === "finished" && typeof item.score === "number"))),
+      onSnapshot(workspaceDoc(dataScope, "settings", "grades"), (snapshot) => setWeights(normalizeWeights(snapshot.exists() ? snapshot.data().weights as Partial<GradeWeights> : undefined))),
+      onSnapshot(workspaceDoc(dataScope, "settings", "academic"), (snapshot) => setAcademic(normalizeAcademic(snapshot.exists() ? snapshot.data() as Partial<AcademicSettings> : undefined))),
+      subscribeByClass(dataScope, "manualGrades", allowedClassNames, (documents) => setManualGrades(documents.map((item) => ({ id: item.id, ...item.data() } as ManualGrade)).sort((a, b) => b.createdAtMs - a.createdAtMs))),
+      subscribeByClass(dataScope, "exams", allowedClassNames, (documents) => setExams(documents.map((item) => ({ id: item.id, ...item.data() } as Exam)))),
+      onSnapshot(workspaceCollection(dataScope, "subjects"), (snapshot) => setSubjects([...defaultSubjects, ...snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as Subject))])),
+      onSnapshot(query(collection(db, "publicQuizAttempts"), where(dataScope.root === "schools" && !allowedClassNames ? "schoolId" : "ownerUid", "==", dataScope.root === "schools" && !allowedClassNames ? dataScope.id : user.uid)), (snapshot) => setAttempts(snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as Attempt)).filter((item) => item.status === "finished" && typeof item.score === "number"))),
     ];
     return () => stops.forEach((stop) => stop());
-  }, [user, demo]);
+  }, [user, demo, dataScope?.root, dataScope?.id, allowedClassNames?.join("\u0001")]);
+  function getBestCbtScores(studentId: string, filterFn: (exam: Exam | undefined) => boolean): number[] {
+    const studentAttempts = attempts.filter((attempt) => attempt.studentId === studentId);
+    const byExam = new Map<string, number>();
+    for (const attempt of studentAttempts) {
+      const exam = exams.find((e) => e.id === attempt.examId);
+      if (!filterFn(exam)) continue;
+      const score = Number(attempt.score);
+      if (!Number.isFinite(score)) continue;
+      const currentBest = byExam.get(attempt.examId) ?? -1;
+      if (score > currentBest) byExam.set(attempt.examId, score);
+    }
+    return Array.from(byExam.values());
+  }
   const rows = useMemo(() => classStudents.map((student) => {
     const categoryScores = {} as Record<GradeCategory, number | null>; const cbtScores: number[] = [];
     for (const item of categories) {
-      const manual = manualGrades.filter((grade) => grade.studentId === student.id && grade.category === item.key).map((grade) => grade.score);
-      const cbt = attempts.filter((attempt) => attempt.studentId === student.id && examCategory(exams.find((exam) => exam.id === attempt.examId)) === item.key).map((attempt) => Number(attempt.score));
+      const manual = manualGrades.filter((grade) => grade.studentId === student.id && grade.category === item.key).map((grade) => Number(grade.score));
+      const cbt = getBestCbtScores(student.id, (exam) => examCategory(exam) === item.key);
       cbtScores.push(...cbt); categoryScores[item.key] = average([...manual, ...cbt]);
     }
     let weightedSum = 0; let usedWeight = 0;
@@ -139,7 +162,7 @@ export function ScoresView({ user, demo, students, setToast }: CommonProps) {
   const latestExams = useMemo(() => exams.filter((exam) => !selectedClass || exam.className === selectedClass).sort((a, b) => (b.createdAt?.toMillis?.() ?? 0) - (a.createdAt?.toMillis?.() ?? 0)).slice(0, 5), [exams, selectedClass]);
   const subjectScore = (student: Student, subject: string) => average([
     ...manualGrades.filter((grade) => grade.studentId === student.id && (grade.subject || "Mata Pelajaran") === subject).map((grade) => Number(grade.score)),
-    ...attempts.filter((attempt) => attempt.studentId === student.id && (exams.find((exam) => exam.id === attempt.examId)?.subject || "Kuis") === subject).map((attempt) => Number(attempt.score)),
+    ...getBestCbtScores(student.id, (exam) => (exam?.subject || "Kuis") === subject),
   ].filter((value) => Number.isFinite(value)));
   const studentSubjectRows = subjectNames.map((subject) => ({ subject, score: selectedStudent ? subjectScore(selectedStudent, subject) : null }));
   const selectedStudentScores = studentSubjectRows.map((row) => row.score).filter((value): value is number => value !== null);
@@ -152,7 +175,7 @@ export function ScoresView({ user, demo, students, setToast }: CommonProps) {
   async function saveWeights() {
     if (Math.round(totalWeight * 100) / 100 !== 100) { setToast({ message: "Total bobot harus tepat 100%.", tone: "error" }); return; }
     setSaving(true);
-    try { if (!demo && user) await setDoc(doc(db, "users", user.uid, "settings", "grades"), { weights, updatedAt: serverTimestamp() }, { merge: true }); setToast({ message: "Bobot penilaian berhasil disimpan.", tone: "success" }); }
+    try { if (!demo && dataScope) await setDoc(workspaceDoc(dataScope, "settings", "grades"), { weights, updatedAt: serverTimestamp() }, { merge: true }); setToast({ message: "Bobot penilaian berhasil disimpan.", tone: "success" }); }
     catch { setToast({ message: "Bobot penilaian gagal disimpan.", tone: "error" }); } finally { setSaving(false); }
   }
   async function saveManualGrade() {
@@ -160,11 +183,11 @@ export function ScoresView({ user, demo, students, setToast }: CommonProps) {
     if (!student || !type || !form.subject.trim() || !form.name.trim() || !Number.isFinite(score) || score < 0 || score > 100) { setToast({ message: "Lengkapi siswa, mata pelajaran, nama penilaian, dan nilai 0-100.", tone: "error" }); return; }
     const payload: Omit<ManualGrade, "id"> = { className: student.className, subject: form.subject.trim(), category: type.category, assessmentType: type.value, name: form.name.trim(), studentId: student.id, studentName: student.name, nis: student.nis, score, notes: form.notes.trim(), createdAtMs: Date.now() };
     setSaving(true);
-    try { if (!demo && user) await addDoc(collection(db, "users", user.uid, "manualGrades"), { ...payload, createdAt: serverTimestamp() }); else setManualGrades((current) => [{ id: crypto.randomUUID(), ...payload }, ...current]); setForm((current) => ({ ...current, name: "", score: "", notes: "" })); setToast({ message: "Nilai manual berhasil disimpan.", tone: "success" }); }
+    try { if (!demo && dataScope) await addDoc(workspaceCollection(dataScope, "manualGrades"), { ...payload, createdByUid: user?.uid ?? "", createdAt: serverTimestamp() }); else setManualGrades((current) => [{ id: crypto.randomUUID(), ...payload }, ...current]); setForm((current) => ({ ...current, name: "", score: "", notes: "" })); setToast({ message: "Nilai manual berhasil disimpan.", tone: "success" }); }
     catch { setToast({ message: "Nilai manual gagal disimpan.", tone: "error" }); } finally { setSaving(false); }
   }
   async function removeManualGrade(item: ManualGrade) {
-    try { if (!demo && user) await deleteDoc(doc(db, "users", user.uid, "manualGrades", item.id)); else setManualGrades((current) => current.filter((grade) => grade.id !== item.id)); setToast({ message: "Nilai manual dihapus.", tone: "success" }); }
+    try { if (!demo && dataScope) await deleteDoc(workspaceDoc(dataScope, "manualGrades", item.id)); else setManualGrades((current) => current.filter((grade) => grade.id !== item.id)); setToast({ message: "Nilai manual dihapus.", tone: "success" }); }
     catch { setToast({ message: "Nilai manual gagal dihapus.", tone: "error" }); }
   }
   function exportExcel() {
@@ -224,29 +247,30 @@ export function ScoresView({ user, demo, students, setToast }: CommonProps) {
 
 function EmptyState({ message }: { message: string }) { return <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-5 py-10 text-center text-sm font-bold text-slate-400">{message}</div>; }
 function MiniStat({ label, value }: { label: string; value: string | number }) { return <div className="rounded-xl bg-slate-50 p-3"><p className="text-[9px] font-black uppercase text-slate-400">{label}</p><p className="mt-1 text-sm font-black">{value}</p></div>; }
-export function AcademicView({ user, demo, students, setToast }: CommonProps) {
+export function AcademicView({ user, demo, students, setToast, scope }: CommonProps) {
+  const dataScope: WorkspaceScope | null = scope ?? (user ? { root: "users", id: user.uid } : null);
   const studentClasses = useMemo(() => Array.from(new Set(students.map((item) => item.className).filter(Boolean))).sort(), [students]);
   const initialClasses = studentClasses.length ? studentClasses : defaultAcademic.classNames;
   const [form, setForm] = useState({ ...defaultAcademic, classNames: initialClasses });
   const [classText, setClassText] = useState(initialClasses.join(", "));
   const [saving, setSaving] = useState(false);
   useEffect(() => {
-    if (demo || !user) return;
-    return onSnapshot(doc(db, "users", user.uid, "settings", "academic"), (snapshot) => {
+    if (demo || !user || !dataScope) return;
+    return onSnapshot(workspaceDoc(dataScope, "settings", "academic"), (snapshot) => {
       if (!snapshot.exists()) return;
       const next = normalizeAcademic(snapshot.data() as Partial<AcademicSettings>);
       setForm(next); setClassText(next.classNames.join(", "));
     });
-  }, [user, demo]);
+  }, [user, demo, dataScope?.root, dataScope?.id]);
   async function saveAcademic() {
     const classNames = Array.from(new Set(classText.split(",").map((item) => item.trim()).filter(Boolean)));
     if (!form.schoolName.trim() || !form.academicYear.trim() || !classNames.length || form.kkm < 0 || form.kkm > 100) { setToast({ message: "Lengkapi sekolah, tahun ajaran, kelas, dan KKM 0–100.", tone: "error" }); return; }
     const payload = { ...form, schoolName: form.schoolName.trim(), academicYear: form.academicYear.trim(), classNames };
     setSaving(true);
     try {
-      if (!demo && user) {
-        await setDoc(doc(db, "users", user.uid, "settings", "academic"), { ...payload, updatedAt: serverTimestamp() }, { merge: true });
-        await updateDoc(doc(db, "users", user.uid), { schoolName: payload.schoolName, updatedAt: serverTimestamp() });
+      if (!demo && user && dataScope) {
+        await setDoc(workspaceDoc(dataScope, "settings", "academic"), { ...payload, updatedAt: serverTimestamp() }, { merge: true });
+        if (dataScope.root === "users") await updateDoc(doc(db, "users", user.uid), { schoolName: payload.schoolName, updatedAt: serverTimestamp() });
       }
       setForm(payload); setClassText(classNames.join(", ")); setToast({ message: "Data akademik aktif berhasil disimpan.", tone: "success" });
     } catch { setToast({ message: "Data akademik gagal disimpan.", tone: "error" }); } finally { setSaving(false); }

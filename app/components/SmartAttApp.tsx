@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 import {
   Activity, AlarmClock, ArrowLeft, ArrowRightLeft, BarChart3, Banknote, Bell, BookOpen, Bot, CalendarDays,
@@ -18,7 +18,7 @@ import {
 } from "firebase/auth";
 import {
   addDoc, arrayUnion, collection, deleteDoc, deleteField, doc, getDoc, onSnapshot, orderBy, query, serverTimestamp,
-  runTransaction, setDoc, updateDoc, where, writeBatch,
+  runTransaction, setDoc, updateDoc, where, writeBatch, type DocumentData, type QueryDocumentSnapshot,
 } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
 import { parseStudentsCsv } from "../lib/csv";
@@ -28,9 +28,19 @@ import { createStudentThumbnail, drawStudentCrop, loadPhoto, resizeStudentPhoto,
 import { findStudentByQrOrNis } from "../lib/attendance";
 import { AcademicView, ScoresView } from "./GradeViews";
 import { AttendanceViewPro, ScannerViewPro } from "./OperationalViews";
+import { PublicSubjectElection, PublicElectionStatus } from "./SubjectElectionViews";
 import { PublicQuizProfessional } from "./ExamPortal";
 import { ProfileProfessional, SuperAdminProfessional } from "./AdminViews";
 import { LoginArticlePreview, PublicArticles } from "./ArticleViews";
+import { TeacherCalendarView, TeachingScheduleView } from "./TeacherScheduleViews";
+import { PublicSavingsPortal } from "./PublicSavingsPortal";
+import { PublicTeacherRegistration } from "./PublicTeacherRegistration";
+import { PublicLinkPortal } from "./PublicLinkPortal";
+import { workspaceCollection, workspaceDoc, type WorkspaceScope } from "../lib/workspace";
+import { normalizeAccountAccess, type AccountAccessProfile } from "../lib/access";
+import { SchoolOnboarding, SchoolWorkspace } from "./SchoolWorkspace";
+import { tokenAccountTypeLabel, tokenMatchesAccountType, type TokenAccountType } from "../lib/tokenAccess";
+import { buildQuizShortUrl, generateQuizAccessCode, normalizeQuizAccessCode } from "../lib/publicLink";
 
 type Student = {
   id: string;
@@ -69,6 +79,7 @@ type AbsensiSession = {
 type AbsenceSnapshot = {
   type: "absence";
   ownerUid: string;
+  schoolId?: string;
   sessionId: string;
   published: boolean;
   schoolName: string;
@@ -104,10 +115,13 @@ type ExamRecord = {
   gradeCategory?: GradeCategory;
   assessmentType?: "daily_test" | "quiz" | "pts_sts" | "pas_sas";
   snapshotId?: string;
+  accessCode?: string;
 durationMinutes?: number;
   startAtMs?: number;
   endAtMs?: number;
   targetStudentCount?: number;
+  endedAtMs?: number;
+  endedManually?: boolean;
   createdAt?: { toMillis?: () => number; toDate?: () => Date } | null;
 };
 
@@ -173,9 +187,11 @@ type QuizAttempt = {
   durationSeconds?: number;
   violations?: { type: string; atMs: number }[];
   startedAtMs?: number;
-deadlineMs?: number;
+  deadlineMs?: number;
   reloginCount?: number;
   loginEvents?: { type: string; atMs: number }[];
+  randomSeed?: string;
+  finishReason?: "waktu_habis" | "dikirim_siswa" | "ditutup_guru";
 };
 
 type GradeCategory = "task" | "quiz" | "summative" | "midterm" | "final" | "practice" | "project" | "attitude";
@@ -237,7 +253,7 @@ durationMinutes: number;
   students: Pick<Student, "id" | "nis" | "nisn" | "name" | "className">[];
 };
 
-type NavKey = "dashboard" | "students" | "scan" | "attendance" | "savings" | "subjects" | "tasks" | "exams" | "ai" | "scores" | "profile" | "academic";
+type NavKey = "dashboard" | "students" | "scan" | "attendance" | "savings" | "schedule" | "calendar" | "subjects" | "tasks" | "exams" | "ai" | "scores" | "profile" | "academic";
 type Toast = { message: string; tone: "success" | "error" } | null;
 
 const SUPERADMIN_EMAIL = (process.env.NEXT_PUBLIC_SUPERADMIN_EMAIL ?? "idhamdjuanda@gmail.com").toLowerCase();
@@ -325,6 +341,8 @@ const navGroups: { label: string; items: { key: NavKey; label: string; icon: typ
     { key: "savings", label: "Tabungan Siswa", icon: Wallet },
   ] },
   { label: "PEMBELAJARAN", items: [
+    { key: "schedule", label: "Jadwal Pelajaran", icon: AlarmClock },
+    { key: "calendar", label: "Kalender Guru", icon: CalendarDays },
     { key: "subjects", label: "Mata Pelajaran", icon: BookOpen },
     { key: "tasks", label: "Tugas & PR", icon: BookOpen },
     { key: "exams", label: "Soal & Ulangan", icon: ClipboardCheck },
@@ -365,6 +383,8 @@ function AuthScreen({ onDemo }: { onDemo: () => void }) {
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [schoolName, setSchoolName] = useState("");
+  const [schoolLevel, setSchoolLevel] = useState<"SD" | "SMP" | "SMA" | "SMK">("SMP");
+  const [accountType, setAccountType] = useState<"individual" | "school">("individual");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -381,6 +401,8 @@ function AuthScreen({ onDemo }: { onDemo: () => void }) {
         await setDoc(doc(db, "users", result.user.uid), {
           email: normalizedEmail, name, schoolName,
           role: isSuperAdmin ? "superadmin" : "teacher",
+          accountType: isSuperAdmin ? "individual" : accountType,
+          ...(!isSuperAdmin && accountType === "school" ? { schoolOnboardingStatus: "choose_admin_role", schoolLevel } : {}),
           status: isSuperAdmin ? "active" : "trial",
           createdAt: serverTimestamp(),
           ...(isSuperAdmin ? {} : { trialEndsAt }),
@@ -444,8 +466,10 @@ function AuthScreen({ onDemo }: { onDemo: () => void }) {
           <div className="mb-6 lg:hidden"><LoginArticlePreview variant="light" /></div>
           <form onSubmit={submit} className="space-y-4">
             {mode === "register" && <>
+              <fieldset><legend className="mb-2 text-xs font-extrabold text-slate-700">Jenis akun</legend><div className="grid grid-cols-2 gap-3">{([['individual','Guru SD Perorangan','Flow lama'],['school','Per Sekolah','SD / SMP / SMA / SMK']] as const).map(([key,label,note])=><button type="button" key={key} onClick={()=>setAccountType(key)} className={`rounded-xl border-2 p-3 text-left transition ${accountType===key?'border-teal-600 bg-teal-50':'border-slate-200 bg-white'}`}><span className="block text-xs font-black text-slate-800">{label}</span><span className="mt-1 block text-[10px] text-slate-400">{note}</span></button>)}</div></fieldset>
               <Field label="Nama lengkap" value={name} onChange={setName} placeholder="Nama guru" required />
               <Field label="Nama sekolah" value={schoolName} onChange={setSchoolName} placeholder="SMP Harapan Bangsa" required />
+              {accountType === "school" && <label className="block"><span className="mb-2 block text-xs font-extrabold text-slate-700">Jenjang sekolah</span><select value={schoolLevel} onChange={(event)=>setSchoolLevel(event.target.value as "SD" | "SMP" | "SMA" | "SMK")} className="h-12 w-full rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold"><option value="SD">SD</option><option value="SMP">SMP</option><option value="SMA">SMA</option><option value="SMK">SMK</option></select><span className="mt-1 block text-[10px] text-slate-400">Kurikulum default 2026 dan alur penugasan akan disesuaikan dengan jenjang ini.</span></label>}
             </>}
             <Field label="Email" type="email" value={email} onChange={setEmail} placeholder="guru@sekolah.id" required />
             <Field label="Password" type="password" value={password} onChange={setPassword} placeholder="Minimal 6 karakter" required />
@@ -474,35 +498,53 @@ type PublicInfoKind = "faq" | "terms" | "refund" | "contact";
 
 const PUBLIC_INFO: Record<Exclude<PublicInfoKind, "contact">, { label: string; title: string; lead: string; entries: { title: string; body: string }[] }> = {
   faq: {
-    label: "PUSAT BANTUAN", title: "Pertanyaan yang sering ditanyakan", lead: "Panduan singkat untuk memulai memakai SMART-ATT di sekolah.",
+    label: "PUSAT BANTUAN", title: "Pertanyaan yang sering ditanyakan", lead: "Panduan terbaru penggunaan SMART-ATT untuk Guru SD perorangan dan pengelolaan sekolah SD, SMP, SMA, serta SMK.",
     entries: [
-      { title: "Apa itu SMART-ATT?", body: "SMART-ATT adalah platform untuk mengelola absensi QR, data siswa, komunikasi wali, tugas, dan ujian online dalam satu akun guru." },
-      { title: "Apakah tersedia masa percobaan?", body: "Ya. Akun guru baru memperoleh masa trial selama 14 hari untuk mencoba fitur SMART-ATT." },
-      { title: "Bagaimana memperpanjang masa aktif akun?", body: "Hubungi admin SMART-ATT untuk membeli token. Setelah menerima token, masukkan pada menu Token atau halaman aktivasi akun." },
-      { title: "Apakah data siswa aman?", body: "Data dipisahkan per akun guru. Guru hanya dapat mengelola data di ruang kerjanya sendiri, kecuali ada proses persetujuan saat berbagi siswa antar kelas." },
-      { title: "Bagaimana jika QR siswa tidak terbaca?", body: "Cetak ulang kartu QR dari menu Data Siswa guru asal, gunakan pencahayaan cukup, lalu arahkan kamera pada QR besar di kartu." },
-      { title: "Bagaimana menghubungi bantuan?", body: "Gunakan WhatsApp admin pada halaman Kontak dan sertakan nama sekolah, email akun, serta kendala yang dialami." }
+      { title: "Apa itu SMART-ATT?", body: "SMART-ATT adalah platform berbasis web untuk absensi QR, data siswa, komunikasi wali, tabungan kelas, tugas/PR, soal dan ulangan, nilai, laporan, kartu pelajar, manajemen guru, penugasan mengajar, serta penyusunan jadwal sekolah." },
+      { title: "Apa perbedaan akun Individual dan School?", body: "Individual mempertahankan flow lama Guru SD yang mengelola kelasnya sendiri. School memakai workspace bersama dengan role Kepala Sekolah, Tata Usaha, dan Guru. Akun lama tanpa accountType tetap dianggap Individual sehingga tidak membutuhkan migrasi manual." },
+      { title: "Jenjang apa saja yang didukung?", body: "Mode School mendukung SD, SMP, SMA, dan SMK. Template mata pelajaran 2026 disesuaikan menurut jenjang dan tetap dapat ditambah, diubah, dinonaktifkan, atau disesuaikan oleh administrator sekolah." },
+      { title: "Siapa yang boleh mengubah data sekolah?", body: "Kepala Sekolah memiliki akses penuh. Tata Usaha mengelola administrasi seperti guru, siswa, kelas, mata pelajaran, penugasan, dan jadwal. Guru hanya melihat kelas/mapel yang ditugaskan serta fitur pembelajaran yang diizinkan; menu tanpa izin tidak ditampilkan." },
+      { title: "Bagaimana menambahkan guru dan siswa dalam jumlah banyak?", body: "Administrator dapat memakai import CSV untuk guru maupun siswa. Guru juga dapat mendaftar melalui link resmi sekolah. Nama kelas dan mata pelajaran pada CSV harus cocok dengan data aktif di workspace sekolah; kelas guru boleh dikosongkan untuk ditugaskan kemudian." },
+      { title: "Bagaimana absensi mode sekolah bekerja?", body: "Sekolah menyediakan HP, tablet, atau laptop sebagai scanner kedatangan. Siswa scan satu kali saat datang; hasil dapat dilihat TU, guru terkait, dan wali kelas. Wali dapat menerima tautan WhatsApp dan mengirim konfirmasi sakit/izin. Mode Individual tetap memakai flow absensi Guru SD yang lama." },
+      { title: "Bagaimana jadwal otomatis dibuat?", body: "Admin mengisi kelas, mapel aktif, guru, kemampuan lintas bidang, JP per minggu, jam belajar, dan waktu istirahat. Generator membuat draft tanpa bentrok guru/kelas dan melaporkan kekurangan guru atau slot. Draft tetap harus ditinjau sebelum diterapkan." },
+      { title: "Apakah guru dapat membuat soal dengan AI?", body: "Ya. Guru sekolah dapat membuat draf soal/ulangan sesuai kelas dan mata pelajaran yang menjadi tugasnya. Hasil generator merupakan bahan bantu; guru wajib meninjau isi, jawaban, tingkat kesulitan, jadwal, dan peserta sebelum memublikasikan." },
+      { title: "Apa yang terjadi saat pergantian tahun ajaran?", body: "Admin dapat mencetak arsip lengkap, melihat preview kenaikan, lalu memproses siswa ke kelas berikutnya. Tingkat akhir menjadi alumni tanpa dihapus. Salinan digital data kelas, siswa, guru, mapel, penugasan, jadwal, dan rencana kenaikan tersimpan sebagai riwayat baca-saja." },
+      { title: "Di mana data dan gambar disimpan?", body: "Autentikasi dan data aplikasi menggunakan Firebase/Cloud Firestore. File seperti foto siswa, sampul artikel, serta PDF tertentu memakai Cloudflare R2 dan layanan Cloudflare Pages. Hak akses dipisahkan berdasarkan pemilik akun, workspace sekolah, role, dan penugasan kelas." },
+      { title: "Apakah tersedia masa percobaan dan bagaimana memperpanjangnya?", body: "Akun yang memenuhi ketentuan pendaftaran dapat memperoleh trial sesuai durasi yang tampil. Setelah berakhir, hubungi admin untuk token yang sesuai jenis akun. Token Individual SATT-I tidak dapat dipakai akun School dan token School SATT-S tidak dapat dipakai akun Individual." },
+      { title: "Bagaimana jika QR, kamera, suara, PDF, atau login bermasalah?", body: "Refresh halaman, periksa izin kamera dan pop-up, pastikan koneksi stabil, lalu coba kembali. Untuk QR gunakan pencahayaan cukup dan kartu yang tidak rusak. Jika masih gagal, hubungi dukungan dengan email akun, nama sekolah, perangkat/browser, waktu kejadian, dan tangkapan layar tanpa password/token." }
     ]
   },
   terms: {
-    label: "DOKUMEN LAYANAN", title: "Syarat & Ketentuan", lead: "Berlaku efektif 16 Juli 2026 untuk seluruh pengguna SMART-ATT.",
+    label: "DOKUMEN LAYANAN", title: "Syarat & Ketentuan", lead: "Berlaku efektif dan terakhir diperbarui 22 Juli 2026 untuk seluruh pengguna SMART-ATT.",
     entries: [
-      { title: "1. Penggunaan layanan", body: "SMART-ATT disediakan untuk kegiatan administrasi dan pembelajaran sekolah. Pengguna wajib memakai layanan secara sah, bertanggung jawab, dan tidak mengganggu keamanan sistem." },
-      { title: "2. Akun dan keamanan", body: "Pemilik akun bertanggung jawab menjaga email, password, token, serta perangkat yang digunakan. Jangan membagikan akses akun kepada pihak yang tidak berwenang." },
-      { title: "3. Data sekolah dan siswa", body: "Pengguna memastikan data yang diinput benar dan memiliki dasar yang sah untuk mengelola data siswa maupun wali. Pengguna wajib menggunakan data sesuai kebutuhan pendidikan." },
-      { title: "4. Trial dan token", body: "Trial berlaku sesuai durasi yang ditampilkan pada akun. Setelah masa aktif berakhir, fitur akun dapat dikunci sampai token aktivasi yang sah diterapkan." },
-      { title: "5. Larangan", body: "Dilarang memakai SMART-ATT untuk penyalahgunaan data, akses tanpa izin, mengirim konten melanggar hukum, mengganggu sistem, atau tindakan yang merugikan pengguna lain." },
-      { title: "6. Perubahan layanan", body: "SMART-ATT dapat memperbarui fitur, keamanan, dan ketentuan layanan untuk menjaga kualitas sistem. Perubahan penting akan disampaikan melalui aplikasi atau kanal resmi." }
+      { title: "1. Persetujuan dan ruang lingkup", body: "Dengan mendaftar, login, mengaktifkan token, atau memakai SMART-ATT, pengguna menyetujui ketentuan ini. Layanan ditujukan untuk administrasi dan pembelajaran sekolah yang sah melalui browser pada HP, tablet, atau komputer." },
+      { title: "2. Jenis akun dan kompatibilitas", body: "SMART-ATT menyediakan akun Individual untuk flow Guru SD perorangan dan akun School untuk workspace SD/SMP/SMA/SMK. Akun lama tanpa accountType diperlakukan sebagai Individual. Pengguna tidak boleh memaksa pemindahan tipe akun atau data dengan cara yang melewati prosedur resmi." },
+      { title: "3. Role dan kewenangan sekolah", body: "Pada mode School, Kepala Sekolah dan Tata Usaha bertindak sebagai administrator sesuai permission yang tersedia. Mereka bertanggung jawab membuat serta menonaktifkan akun guru, menetapkan kelas/mapel, mengatur jadwal, dan memastikan hak akses diberikan hanya kepada personel berwenang. Guru wajib mematuhi pembatasan kelas dan mapel yang ditetapkan." },
+      { title: "4. Akun, password, token, dan perangkat", body: "Pemilik akun bertanggung jawab menjaga email, password, token aktivasi, link publik, serta perangkat scanner. Password dan token tidak boleh dibagikan. Aktivitas yang memakai kredensial sah dianggap berasal dari akun tersebut sampai pengguna melaporkan dugaan penyalahgunaan." },
+      { title: "5. Data siswa, wali, dan sekolah", body: "Sekolah/pengguna menjamin memiliki kewenangan dan dasar yang sesuai untuk memasukkan serta memakai data siswa, foto, identitas wali, kehadiran, nilai, tabungan, dan data pembelajaran. Data hanya boleh digunakan untuk kepentingan pendidikan dan administrasi yang sah, dengan memperhatikan ketentuan pelindungan data yang berlaku." },
+      { title: "6. Penyimpanan dan link publik", body: "Data aplikasi dapat diproses melalui Firebase/Cloud Firestore; file tertentu melalui Cloudflare R2/Pages. Link publik untuk pendataan wali, konfirmasi absensi, tugas, ujian, atau tabungan harus dibagikan secara terbatas. Pengguna bertanggung jawab menonaktifkan link yang tidak lagi dibutuhkan dan tidak menyebarkan data hasilnya secara sembarangan." },
+      { title: "7. Trial, masa aktif, dan token", body: "Trial dan masa aktif mengikuti informasi yang tampil pada akun. Setelah berakhir, akses dapat dikunci sampai token sah diaktifkan. Token bersifat digital, sekali pakai, memiliki masa berlaku/durasi, dan terikat jenis akun: SATT-I untuk Individual serta SATT-S untuk School." },
+      { title: "8. Konten, soal AI, jadwal, dan keputusan sekolah", body: "Generator soal, pembagian guru, rekomendasi kebutuhan guru, serta jadwal otomatis adalah alat bantu berbasis input pengguna dan perhitungan sistem. Sekolah/guru tetap wajib meninjau kebenaran soal, kunci jawaban, beban JP, bentrok, peserta, nilai, laporan, dan keputusan akhir sebelum digunakan." },
+      { title: "9. Absensi, QR, dan sarana operasional", body: "Sekolah bertanggung jawab menyediakan perangkat, koneksi, pencahayaan, kartu QR, pengawasan scanner, dan prosedur cadangan bila perangkat bermasalah. Pengguna wajib memeriksa tanggal, kelas, serta sesi sebelum menyimpan atau menghapus absensi." },
+      { title: "10. Arsip, ekspor, dan cadangan", body: "SMART-ATT menyediakan sejumlah fitur cetak, PDF, CSV, serta arsip tahun ajaran. Pengguna tetap dianjurkan menyimpan salinan resmi secara berkala. Arsip digital bersifat bantuan administrasi dan bukan pengganti kewajiban penyimpanan dokumen sekolah menurut kebijakan instansi." },
+      { title: "11. Larangan penggunaan", body: "Dilarang mengakses workspace tanpa izin, memalsukan kehadiran/nilai, menyalahgunakan data anak atau wali, mengunggah konten melanggar hukum, menyerang atau membebani sistem, membagikan token secara ilegal, membongkar pengamanan, atau merugikan pengguna lain." },
+      { title: "12. Ketersediaan dan pemeliharaan", body: "Layanan dapat mengalami pemeliharaan, pembaruan, gangguan koneksi, atau ketergantungan pada penyedia pihak ketiga. SMART-ATT akan melakukan upaya yang wajar untuk menjaga layanan, tetapi pengguna harus menyiapkan prosedur operasional cadangan untuk kegiatan sekolah yang tidak boleh terhenti." },
+      { title: "13. Penangguhan dan penghentian akses", body: "Akses dapat dibatasi atau dinonaktifkan bila masa aktif berakhir, terdapat dugaan pelanggaran, risiko keamanan, kewajiban hukum, atau permintaan administrator sekolah yang berwenang. Pengguna dapat menghubungi dukungan untuk klarifikasi dan penanganan akun." },
+      { title: "14. Perubahan ketentuan dan kontak", body: "Fitur, biaya, keamanan, serta ketentuan dapat diperbarui mengikuti perkembangan layanan dan peraturan. Versi terbaru ditampilkan pada halaman ini. Pertanyaan atau keberatan dapat disampaikan melalui kanal resmi pada halaman Kontak." }
     ]
   },
   refund: {
-    label: "KEBIJAKAN PEMBAYARAN", title: "Kebijakan Pengembalian Dana", lead: "Kebijakan pengembalian dana untuk pembelian token SMART-ATT.",
+    label: "KEBIJAKAN PEMBAYARAN", title: "Kebijakan Pengembalian Dana", lead: "Berlaku untuk pembelian token SMART-ATT melalui kanal resmi; terakhir diperbarui 22 Juli 2026.",
     entries: [
-      { title: "Token adalah produk digital", body: "Token yang sudah berhasil diaktifkan dan memperpanjang masa aktif akun pada umumnya tidak dapat dikembalikan karena layanan digital telah digunakan." },
-      { title: "Kondisi yang dapat ditinjau", body: "Permohonan refund dapat diajukan untuk pembayaran ganda, nominal salah akibat kesalahan sistem, atau token tidak dapat digunakan karena gangguan dari SMART-ATT." },
-      { title: "Bukan alasan refund", body: "Refund tidak berlaku untuk salah memasukkan email, lupa password, perubahan kebutuhan pengguna, atau token yang sudah berhasil dipakai sesuai durasinya." },
-      { title: "Cara mengajukan", body: "Hubungi admin melalui WhatsApp maksimal 7 hari setelah pembayaran. Sertakan bukti pembayaran, email akun, kode token bila ada, serta penjelasan kendala." },
-      { title: "Proses pemeriksaan", body: "Admin akan memverifikasi transaksi dan memberi keputusan melalui kanal kontak resmi. Jika disetujui, pengembalian dilakukan dengan metode yang disepakati dan sesuai ketentuan yang berlaku." }
+      { title: "Ruang lingkup", body: "Kebijakan ini berlaku untuk token Individual (SATT-I) dan School (SATT-S) yang dibeli langsung melalui kanal resmi SMART-ATT. Pembayaran kepada pihak lain harus diselesaikan dengan pihak penerima pembayaran tersebut." },
+      { title: "Karakter token digital", body: "Token bersifat digital, sekali pakai, mempunyai jenis akun, batas aktivasi, dan durasi layanan. Pengguna wajib memeriksa email akun, pilihan Individual/School, harga, serta durasi sebelum membayar atau mengaktifkan token." },
+      { title: "Kondisi yang dapat ditinjau", body: "Permohonan dapat ditinjau bila terjadi pembayaran ganda untuk transaksi yang sama, pembayaran terverifikasi tetapi token tidak dikirim, token yang diberikan admin resmi tidak sesuai jenis akun yang telah dipesan, atau token valid gagal digunakan karena kesalahan sistem SMART-ATT." },
+      { title: "Penyelesaian awal", body: "Sebelum refund, admin dapat menawarkan koreksi token, penggantian token, perbaikan aktivasi, atau penyesuaian masa aktif. Solusi dipilih setelah transaksi, status token, jenis akun, dan log aktivasi diverifikasi." },
+      { title: "Kondisi yang umumnya tidak dapat dikembalikan", body: "Token yang sudah berhasil dipakai dan menambah masa aktif umumnya tidak dapat direfund. Refund juga tidak berlaku untuk lupa password, salah memasukkan data oleh pengguna, perubahan kebutuhan setelah aktivasi, perangkat/koneksi pengguna, pelanggaran ketentuan, atau token yang dibiarkan melewati batas aktivasi." },
+      { title: "Batas pengajuan", body: "Ajukan melalui WhatsApp atau email resmi secepatnya dan paling lambat 7 hari kalender sejak pembayaran. Jangan mengaktifkan token yang dipersoalkan selama pemeriksaan, kecuali diarahkan admin." },
+      { title: "Bukti yang diperlukan", body: "Sertakan nama pembeli/sekolah, email akun, jenis akun, tanggal dan nominal pembayaran, bukti transaksi, kode token bila sudah diterima, kronologi, serta tangkapan layar pesan kesalahan. Jangan pernah mengirim password akun." },
+      { title: "Verifikasi dan hasil", body: "Admin memeriksa kecocokan pembayaran, penerbitan token, status penggunaan, dan gangguan layanan. Keputusan disampaikan melalui kanal resmi. Bila disetujui, metode serta waktu pengembalian dikonfirmasi kepada pemohon berdasarkan sarana pembayaran yang tersedia." },
+      { title: "Hak berdasarkan peraturan", body: "Kebijakan ini tidak dimaksudkan mengurangi hak pengguna yang wajib diberikan berdasarkan peraturan perundang-undangan Indonesia. Sengketa diupayakan terlebih dahulu melalui komunikasi dan penyelesaian yang wajar." }
     ]
   }
 };
@@ -515,17 +557,29 @@ function PublicInfoPage({ kind }: { kind: PublicInfoKind }) {
   const isContact = kind === "contact";
   const content = isContact ? null : PUBLIC_INFO[kind];
   const title = isContact ? "Hubungi SMART-ATT" : content!.title;
-  const lead = isContact ? "Tim SMART-ATT siap membantu pertanyaan akun, token, dan penggunaan aplikasi." : content!.lead;
-  return <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,#dff9f3,transparent_34%),linear-gradient(135deg,#f7fbff,#fffaf0)] text-slate-900"><header className="mx-auto flex w-full max-w-5xl items-center justify-between gap-4 px-5 py-5 sm:px-8"><a href="/" className="flex items-center gap-3"><img src="/logo.png" alt="SMART-ATT" className="h-10 w-10 rounded-xl object-cover shadow-sm"/><span><strong className="block text-sm font-black tracking-wide">SMART-ATT</strong><span className="block text-[10px] font-bold text-slate-500">Absensi QR & Kuis Cerdas</span></span></a><a href="/" className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 shadow-sm hover:border-teal-300 hover:text-teal-700"><ArrowLeft size={15}/>Kembali</a></header><section className="mx-auto w-full max-w-4xl px-5 pb-14 pt-6 sm:px-8 sm:pt-12"><div className="rounded-3xl border border-teal-100 bg-white p-6 shadow-xl shadow-slate-900/5 sm:p-10"><p className="text-[11px] font-black tracking-[.18em] text-teal-600">{isContact ? "KONTAK RESMI" : content!.label}</p><h1 className="mt-3 text-3xl font-black tracking-tight sm:text-4xl">{title}</h1><p className="mt-3 max-w-2xl text-sm leading-6 text-slate-500 sm:text-base">{lead}</p>{isContact ? <div className="mt-8 grid gap-4 sm:grid-cols-2"><a href="https://wa.me/6285176932228?text=Halo%20Admin%20SMART-ATT%2C%20saya%20butuh%20bantuan." target="_blank" rel="noreferrer" className="rounded-2xl border border-emerald-100 bg-emerald-50 p-5 transition hover:-translate-y-0.5 hover:shadow-md"><MessageCircle className="text-emerald-600" size={24}/><h2 className="mt-4 font-black">WhatsApp Admin</h2><p className="mt-1 text-sm text-slate-600">0851-7693-2228</p><p className="mt-3 text-xs font-bold text-emerald-700">Chat untuk token dan bantuan akun →</p></a><a href="mailto:idhamdjuanda@gmail.com?subject=Bantuan%20SMART-ATT" className="rounded-2xl border border-sky-100 bg-sky-50 p-5 transition hover:-translate-y-0.5 hover:shadow-md"><Send className="text-sky-600" size={24}/><h2 className="mt-4 font-black">Email Dukungan</h2><p className="mt-1 break-all text-sm text-slate-600">idhamdjuanda@gmail.com</p><p className="mt-3 text-xs font-bold text-sky-700">Sertakan nama sekolah dan email akun →</p></a></div> : <div className="mt-8 space-y-3">{content!.entries.map((entry) => <article key={entry.title} className="rounded-2xl border border-slate-100 bg-slate-50/80 p-5"><h2 className="text-sm font-black text-slate-900">{entry.title}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{entry.body}</p></article>)}</div>}<div className="mt-10 border-t border-slate-100 pt-6"><PublicInfoLinks className="text-slate-500"/><p className="mt-5 text-center text-[11px] font-medium text-slate-400">© 2026 SMART-ATT · Platform sekolah untuk Indonesia</p></div></div></section></main>;
+  const lead = isContact ? "Dukungan resmi untuk akun Individual/School, token, onboarding sekolah, import data, absensi, jadwal, ujian, laporan, dan kendala teknis." : content!.lead;
+  useEffect(() => {
+    document.title = `${title} | SMART-ATT`;
+    let description = document.head.querySelector('meta[name="description"]') as HTMLMetaElement | null;
+    if (!description) { description = document.createElement("meta"); description.name = "description"; document.head.appendChild(description); }
+    description.content = lead;
+  }, [title, lead]);
+  const whatsappText = "Halo Admin SMART-ATT, saya membutuhkan bantuan. Nama sekolah: ... Email akun: ... Jenis akun (Individual/School): ... Kendala: ...";
+  return <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,#dff9f3,transparent_34%),linear-gradient(135deg,#f7fbff,#fffaf0)] text-slate-900">
+    <header className="mx-auto flex w-full max-w-5xl items-center justify-between gap-4 px-5 py-5 sm:px-8"><a href="/" className="flex items-center gap-3"><img src="/logo.png" alt="SMART-ATT" className="h-10 w-10 rounded-xl object-cover shadow-sm"/><span><strong className="block text-sm font-black tracking-wide">SMART-ATT</strong><span className="block text-[10px] font-bold text-slate-500">School ERP · Absensi QR · Smart Quiz</span></span></a><a href="/" className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-black text-slate-700 shadow-sm hover:border-teal-300 hover:text-teal-700"><ArrowLeft size={15}/>Kembali</a></header>
+    <section className="mx-auto w-full max-w-4xl px-5 pb-14 pt-6 sm:px-8 sm:pt-12"><div className="rounded-3xl border border-teal-100 bg-white p-6 shadow-xl shadow-slate-900/5 sm:p-10"><p className="text-[11px] font-black tracking-[.18em] text-teal-600">{isContact ? "KONTAK RESMI" : content!.label}</p><h1 className="mt-3 text-3xl font-black tracking-tight sm:text-4xl">{title}</h1><p className="mt-3 max-w-3xl text-sm leading-6 text-slate-500 sm:text-base">{lead}</p>
+      {isContact ? <div className="mt-8"><div className="grid gap-4 sm:grid-cols-2"><a href={`https://wa.me/6285176932228?text=${encodeURIComponent(whatsappText)}`} target="_blank" rel="noreferrer" className="rounded-2xl border border-emerald-100 bg-emerald-50 p-5 transition hover:-translate-y-0.5 hover:shadow-md"><MessageCircle className="text-emerald-600" size={24}/><h2 className="mt-4 font-black">WhatsApp Admin</h2><p className="mt-1 text-sm text-slate-600">0851-7693-2228</p><p className="mt-3 text-xs font-bold text-emerald-700">Token, aktivasi, dan bantuan cepat →</p></a><a href="mailto:idhamdjuanda@gmail.com?subject=Bantuan%20SMART-ATT" className="rounded-2xl border border-sky-100 bg-sky-50 p-5 transition hover:-translate-y-0.5 hover:shadow-md"><Send className="text-sky-600" size={24}/><h2 className="mt-4 font-black">Email Dukungan</h2><p className="mt-1 break-all text-sm text-slate-600">idhamdjuanda@gmail.com</p><p className="mt-3 text-xs font-bold text-sky-700">Kendala rinci dan lampiran screenshot →</p></a></div><div className="mt-5 grid gap-4 lg:grid-cols-[1.1fr_.9fr]"><section className="rounded-2xl border border-slate-200 bg-slate-50 p-5"><h2 className="text-sm font-black">Agar lebih cepat ditangani</h2><ul className="mt-3 space-y-2 text-xs leading-5 text-slate-600"><li>• Sertakan nama sekolah dan email akun.</li><li>• Tulis jenis akun: Individual atau School, beserta role jika School.</li><li>• Jelaskan menu, waktu kejadian, perangkat, dan browser yang digunakan.</li><li>• Lampirkan screenshot pesan error dan langkah sebelum kendala muncul.</li><li>• Untuk pembayaran, sertakan tanggal, nominal, dan bukti transaksi.</li></ul></section><section className="rounded-2xl border border-amber-200 bg-amber-50 p-5"><ShieldCheck className="text-amber-700" size={22}/><h2 className="mt-3 text-sm font-black text-amber-950">Jaga keamanan akun</h2><p className="mt-2 text-xs leading-5 text-amber-800">Admin tidak meminta password. Jangan mengirim password, token yang masih aktif, data sensitif siswa, atau link ujian publik melalui grup/kanal tidak resmi.</p><p className="mt-3 text-[10px] font-black text-amber-700">DOMAIN RESMI · smart-att.web.id</p></section></div></div> : <div className="mt-8 space-y-3">{content!.entries.map((entry) => <article key={entry.title} className="rounded-2xl border border-slate-100 bg-slate-50/80 p-5"><h2 className="text-sm font-black text-slate-900">{entry.title}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{entry.body}</p></article>)}</div>}
+      <div className="mt-10 border-t border-slate-100 pt-6"><PublicInfoLinks className="text-slate-500"/><p className="mt-5 text-center text-[11px] font-medium text-slate-400">© 2026 SMART-ATT · Platform sekolah untuk Indonesia</p></div></div></section>
+  </main>;
 }
 const SMARTATT_ADMIN_WHATSAPP = "6285176932228";
 
-function AccountLockedScreen({ user, disabled, onLogout }: { user: User; disabled: boolean; onLogout: () => Promise<void> }) {
+function AccountLockedScreen({ user, disabled, accountType, onLogout }: { user: User; disabled: boolean; accountType: TokenAccountType; onLogout: () => Promise<void> }) {
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const whatsappMessage = `Halo Admin SMART-ATT, saya ingin membeli token atau memperpanjang masa aktif SMART-ATT. Email akun saya: ${user.email ?? "-"}. Mohon informasi pembelian tokennya.`;
+  const whatsappMessage = `Halo Admin SMART-ATT, saya ingin membeli token ${tokenAccountTypeLabel(accountType)} atau memperpanjang masa aktif SMART-ATT. Email akun saya: ${user.email ?? "-"}. Mohon informasi pembelian tokennya.`;
   const whatsappUrl = `https://wa.me/${SMARTATT_ADMIN_WHATSAPP}?text=${encodeURIComponent(whatsappMessage)}`;
 
   async function activateToken() {
@@ -538,12 +592,15 @@ function AccountLockedScreen({ user, disabled, onLogout }: { user: User; disable
         const userRef = doc(db, "users", user.uid);
         const [tokenSnapshot, userSnapshot] = await Promise.all([transaction.get(tokenRef), transaction.get(userRef)]);
         if (!tokenSnapshot.exists()) throw new Error("Token tidak ditemukan.");
-        const tokenData = tokenSnapshot.data() as { status?: string; tokenExpiresAtMs?: number; durationDays?: number };
+        const tokenData = tokenSnapshot.data() as { status?: string; tokenExpiresAtMs?: number; durationDays?: number; accountType?: TokenAccountType };
         const now = Date.now();
         if (tokenData.status !== "active") throw new Error(tokenData.status === "used" ? "Token sudah digunakan." : "Token tidak aktif.");
         if (!tokenData.tokenExpiresAtMs || tokenData.tokenExpiresAtMs <= now) throw new Error("Token sudah kedaluwarsa.");
         if (!tokenData.durationDays) throw new Error("Durasi token tidak valid.");
-        const userData = userSnapshot.data() as { activeUntilMs?: number; trialEndsAt?: { toMillis?: () => number } } | undefined;
+        const userData = userSnapshot.data() as { accountType?: TokenAccountType; activeUntilMs?: number; trialEndsAt?: { toMillis?: () => number } } | undefined;
+        if (!tokenMatchesAccountType(tokenData.accountType, userData?.accountType)) {
+          throw new Error(accountType === "school" ? "Token Guru SD tidak dapat dipakai untuk akun sekolah." : "Token sekolah tidak dapat dipakai untuk akun Guru SD perorangan.");
+        }
         const base = Math.max(now, userData?.activeUntilMs ?? userData?.trialEndsAt?.toMillis?.() ?? 0);
         const activeUntilMs = base + tokenData.durationDays * 86400000;
         transaction.update(tokenRef, { status: "used", usedBy: user.uid, usedByEmail: user.email ?? "", usedAtMs: now, accountExpiresAtMs: activeUntilMs, usedAt: serverTimestamp() });
@@ -554,7 +611,7 @@ function AccountLockedScreen({ user, disabled, onLogout }: { user: User; disable
     finally { setBusy(false); }
   }
 
-  return <main className="grid min-h-screen place-items-center bg-[radial-gradient(circle_at_top_left,#e7faf6,transparent_35%),linear-gradient(135deg,#f8fbff,#fff9ed)] p-5"><section className="w-full max-w-md rounded-3xl border border-rose-100 bg-white p-7 text-center shadow-xl sm:p-8"><div className="mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-rose-50 text-rose-600"><LockKeyhole size={32}/></div><h1 className="mt-5 text-2xl font-black">{disabled ? "Akun dinonaktifkan" : "Masa aktif SMART-ATT berakhir"}</h1><p className="mt-3 text-sm leading-6 text-slate-500">{disabled ? "Akun ini dinonaktifkan oleh administrator. Hubungi admin SMART-ATT untuk bantuan." : "Trial atau token akun Anda sudah habis. Seluruh fitur dikunci sampai masa aktif diperpanjang."}</p>{!disabled&&<div className="mt-6 rounded-2xl bg-slate-50 p-4 text-left"><label><span className="mb-2 block text-xs font-extrabold">Sudah punya token?</span><input value={token} onChange={(event) => { setToken(event.target.value.toUpperCase()); setError(""); }} placeholder="SATT-XXXXXXXXXXXX" className="h-12 w-full rounded-xl border border-slate-200 bg-white px-3 font-mono text-sm uppercase outline-none focus:border-teal-500"/></label><button disabled={busy || !token.trim()} onClick={() => void activateToken()} className="mt-3 flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-slate-950 text-sm font-extrabold text-white disabled:opacity-40">{busy ? <Loader2 className="animate-spin" size={17}/> : <ShieldCheck size={17}/>}Aktifkan token</button></div>}{error&&<p className="mt-3 rounded-xl bg-rose-50 p-3 text-xs font-bold text-rose-700">{error}</p>}{message&&<p className="mt-3 rounded-xl bg-emerald-50 p-3 text-xs font-bold text-emerald-700">{message}</p>}<a href={whatsappUrl} target="_blank" rel="noreferrer" className="mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 text-sm font-extrabold text-white"><MessageCircle size={18}/>Beli token SMART-ATT via WhatsApp</a><p className="mt-2 text-xs font-bold text-slate-500">Admin: 0851-7693-2228</p><button onClick={() => void onLogout()} className="mt-5 text-xs font-black text-slate-500 hover:text-slate-900">Keluar dari akun</button></section></main>;
+  return <main className="grid min-h-screen place-items-center bg-[radial-gradient(circle_at_top_left,#e7faf6,transparent_35%),linear-gradient(135deg,#f8fbff,#fff9ed)] p-5"><section className="w-full max-w-md rounded-3xl border border-rose-100 bg-white p-7 text-center shadow-xl sm:p-8"><div className="mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-rose-50 text-rose-600"><LockKeyhole size={32}/></div><h1 className="mt-5 text-2xl font-black">{disabled ? "Akun dinonaktifkan" : "Masa aktif SMART-ATT berakhir"}</h1><p className="mt-3 text-sm leading-6 text-slate-500">{disabled ? "Akun ini dinonaktifkan oleh administrator. Hubungi admin SMART-ATT untuk bantuan." : "Trial atau token akun Anda sudah habis. Seluruh fitur dikunci sampai masa aktif diperpanjang."}</p>{!disabled&&<div className="mt-6 rounded-2xl bg-slate-50 p-4 text-left"><p className="mb-3 rounded-lg bg-teal-50 px-3 py-2 text-[10px] font-black text-teal-700">AKUN {tokenAccountTypeLabel(accountType).toUpperCase()} · gunakan token {accountType==='school'?'SATT-S':'SATT-I'}</p><label><span className="mb-2 block text-xs font-extrabold">Sudah punya token?</span><input value={token} onChange={(event) => { setToken(event.target.value.toUpperCase()); setError(""); }} placeholder={accountType==='school'?"SATT-S-XXXXXXXXXXXX":"SATT-I-XXXXXXXXXXXX"} className="h-12 w-full rounded-xl border border-slate-200 bg-white px-3 font-mono text-sm uppercase outline-none focus:border-teal-500"/></label><button disabled={busy || !token.trim()} onClick={() => void activateToken()} className="mt-3 flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-slate-950 text-sm font-extrabold text-white disabled:opacity-40">{busy ? <Loader2 className="animate-spin" size={17}/> : <ShieldCheck size={17}/>}Aktifkan token</button></div>}{error&&<p className="mt-3 rounded-xl bg-rose-50 p-3 text-xs font-bold text-rose-700">{error}</p>}{message&&<p className="mt-3 rounded-xl bg-emerald-50 p-3 text-xs font-bold text-emerald-700">{message}</p>}<a href={whatsappUrl} target="_blank" rel="noreferrer" className="mt-5 flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 text-sm font-extrabold text-white"><MessageCircle size={18}/>Beli token SMART-ATT via WhatsApp</a><p className="mt-2 text-xs font-bold text-slate-500">Admin: 0851-7693-2228</p><button onClick={() => void onLogout()} className="mt-5 text-xs font-black text-slate-500 hover:text-slate-900">Keluar dari akun</button></section></main>;
 }
 
 function SmartAttApp() {
@@ -567,11 +624,27 @@ function SmartAttApp() {
   const [activeSession, setActiveSession] = useState<ActiveTeachingSession>(DEFAULT_ACTIVE_SESSION);
   const [toast, setToast] = useState<Toast>(null);
   const [accountGate, setAccountGate] = useState({ loaded: false, disabled: false, expiryMs: 0, verificationError: false });
+  const [accountAccess, setAccountAccess] = useState<AccountAccessProfile>(() => normalizeAccountAccess(undefined));
+  const [accountProfile, setAccountProfile] = useState({ name: "", schoolName: "", schoolLevel: "SMP" as "SD" | "SMP" | "SMA" | "SMK" });
   const [accountClock, setAccountClock] = useState(Date.now());
   const [showVerificationError, setShowVerificationError] = useState(false);
   const processingGuardianResponsesRef = useRef<Record<string, boolean>>({});
 
-  useEffect(() => onAuthStateChanged(auth, (nextUser) => { setAccountGate({ loaded: !nextUser, disabled: false, expiryMs: 0, verificationError: false }); setUser(nextUser); setAuthReady(true); }), []);
+  useEffect(() => {
+    let authSettled = false;
+    const finishAuth = (nextUser: User | null) => {
+      authSettled = true;
+      setAccountGate({ loaded: !nextUser, disabled: false, expiryMs: 0, verificationError: false });
+      setUser(nextUser);
+      if (!nextUser) { setAccountAccess(normalizeAccountAccess(undefined)); setAccountProfile({ name: "", schoolName: "", schoolLevel: "SMP" }); }
+      setAuthReady(true);
+    };
+    const unsubscribe = onAuthStateChanged(auth, finishAuth, () => finishAuth(auth.currentUser));
+    const watchdog = window.setTimeout(() => {
+      if (!authSettled) finishAuth(auth.currentUser);
+    }, 6000);
+    return () => { window.clearTimeout(watchdog); unsubscribe(); };
+  }, []);
   useEffect(() => { const interval = setInterval(() => setAccountClock(Date.now()), 60000); return () => clearInterval(interval); }, []);
   useEffect(() => {
     if (!accountGate.verificationError) { setShowVerificationError(false); return; }
@@ -596,6 +669,9 @@ function SmartAttApp() {
       void (async () => {
         if (!snapshot.exists()) { setAccountGate({ loaded: true, disabled: false, expiryMs: 0, verificationError: true }); return; }
         const data = snapshot.data();
+        setAccountAccess(normalizeAccountAccess(data));
+        const schoolLevel = data.schoolLevel === "SD" || data.schoolLevel === "SMP" || data.schoolLevel === "SMA" || data.schoolLevel === "SMK" ? data.schoolLevel : "SMP";
+        setAccountProfile({ name: typeof data.name === "string" ? data.name : "", schoolName: typeof data.schoolName === "string" ? data.schoolName : "", schoolLevel });
         const toMillis = (value: unknown) => {
           if (typeof value === "number" && Number.isFinite(value)) return value;
           if (typeof value === "string") { const parsed = Number(value); if (Number.isFinite(parsed)) return parsed; }
@@ -614,7 +690,7 @@ function SmartAttApp() {
           loaded: true,
           disabled: data.disabled === true || data.status === "disabled",
           expiryMs,
-          verificationError: !expiryMs && data.status !== "disabled",
+          verificationError: !expiryMs && data.status !== "disabled" && !(data.accountType === "school" && data.schoolRole === "teacher"),
         });
       })();
     }, () => setAccountGate({ loaded: true, disabled: false, expiryMs: 0, verificationError: true }));
@@ -625,13 +701,15 @@ function SmartAttApp() {
   }, [user]);
   useEffect(() => {
     if (!user) { setStudents(demoStudents); return; }
+    if (accountAccess.accountType === "school") { setStudents([]); return; }
     setStudents([]);
     const q = query(collection(db, "users", user.uid, "students"), orderBy("name"));
     return onSnapshot(q, (snap) => setStudents(snap.docs.map((item) => ({ id: item.id, ...item.data() } as Student))), () => setToast({ message: "Firestore belum siap. Periksa rules dan konfigurasi proyek.", tone: "error" }));
-  }, [user, demo]);
+  }, [user, demo, accountAccess.accountType]);
   useEffect(() => {
     if (demo) { setActiveSession(DEFAULT_ACTIVE_SESSION); return; }
     if (!user) return;
+    if (accountAccess.accountType === "school") return;
     return onSnapshot(doc(db, "users", user.uid, "settings", "activeTeachingSession"), (snapshot) => {
       const data = snapshot.data() as Partial<ActiveTeachingSession> | undefined;
       if (!data) return;
@@ -643,9 +721,10 @@ function SmartAttApp() {
         endTime: typeof data.endTime === "string" ? data.endTime : DEFAULT_ACTIVE_SESSION.endTime,
       });
     });
-  }, [user, demo]);
+  }, [user, demo, accountAccess.accountType]);
   useEffect(() => {
     if (!user) return;
+    if (accountAccess.accountType === "school") return;
     const responsesQuery = query(collection(db, "publicResponses"), where("ownerUid", "==", user.uid));
     return onSnapshot(responsesQuery, (snapshot) => {
       for (const response of snapshot.docs) {
@@ -681,16 +760,22 @@ function SmartAttApp() {
         })();
       }
     }, () => setToast({ message: "Kiriman data wali belum dapat dibaca.", tone: "error" }));
-  }, [user]);
+  }, [user, accountAccess.accountType]);
   useEffect(() => {
     if (!user) return;
-    const responsesQuery = query(collection(db, "publicAbsenceResponses"), where("ownerUid", "==", user.uid));
+    const schoolId = accountAccess.accountType === "school" ? accountAccess.schoolId : undefined;
+    const responsesQuery = schoolId
+      ? query(collection(db, "publicAbsenceResponses"), where("schoolId", "==", schoolId))
+      : query(collection(db, "publicAbsenceResponses"), where("ownerUid", "==", user.uid));
     return onSnapshot(responsesQuery, (snapshot) => {
       for (const response of snapshot.docs) {
-        const data = response.data() as { snapshotId?: string; sessionId?: string; studentId?: string; attendanceStatus?: AbsensiStatus; reason?: string; status?: string };
+        const data = response.data() as { snapshotId?: string; schoolId?: string; sessionId?: string; studentId?: string; attendanceStatus?: AbsensiStatus; reason?: string; status?: string };
         if (data.status !== "pending" || !data.snapshotId || !data.sessionId || !data.studentId || !data.attendanceStatus || !data.reason) continue;
         const batch = writeBatch(db);
-        batch.update(doc(db, "users", user.uid, "attendanceSessions", data.sessionId), {
+        const sessionRef = schoolId && data.schoolId === schoolId
+          ? doc(db, "schools", schoolId, "attendanceSessions", data.sessionId)
+          : doc(db, "users", user.uid, "attendanceSessions", data.sessionId);
+        batch.update(sessionRef, {
           [`records.${data.studentId}`]: {
             studentId: data.studentId,
             status: data.attendanceStatus,
@@ -705,7 +790,7 @@ function SmartAttApp() {
         void batch.commit().catch(() => setToast({ message: "Konfirmasi sakit/izin diterima tetapi belum dapat diterapkan.", tone: "error" }));
       }
     }, () => setToast({ message: "Konfirmasi ketidakhadiran belum dapat dibaca.", tone: "error" }));
-  }, [user]);
+  }, [user, accountAccess.accountType, accountAccess.schoolId]);
   useEffect(() => { if (!toast) return; const id = setTimeout(() => setToast(null), 3500); return () => clearTimeout(id); }, [toast]);
 
   if (pathname === "/faq") return <PublicInfoPage kind="faq"/>;
@@ -713,11 +798,16 @@ function SmartAttApp() {
   if (pathname === "/refund-policy") return <PublicInfoPage kind="refund"/>;
   if (pathname === "/kontak") return <PublicInfoPage kind="contact"/>;
   if (pathname.startsWith("/articles")) { const slug=pathname.split("/").filter(Boolean)[1]; return <PublicArticles slug={slug}/>; }
+  if (["/link","/quiz","/soal"].some((route)=>pathname===route||pathname.startsWith(`${route}/`))) return <PublicLinkPortal/>;
   if (pathname.startsWith("/public/quiz")) return <PublicQuizProfessional />;
   if (pathname.startsWith("/public/task")) return <PublicTask />;
   if (pathname.startsWith("/public/absence")) return <AbsenceConfirmationForm />;
+  if (pathname.startsWith("/public/pilih-mapel")) return <PublicSubjectElection />;
+  if (pathname.startsWith("/public/status-mapel")) return <PublicElectionStatus />;
   if (pathname.startsWith("/public/guardian-data")) return <GuardianDataForm />;
   if (pathname.startsWith("/public/guardian")) return <GuardianDataForm />;
+  if (pathname.startsWith("/public/teacher-register")) return <PublicTeacherRegistration />;
+  if (pathname.startsWith("/public/savings")) return <PublicSavingsPortal />;
   if (!authReady) return <div className="grid min-h-screen place-items-center bg-slate-50"><div className="text-center"><img src="/logo.png" alt="SMART-ATT" className="mx-auto h-20 w-20 animate-pulse rounded-3xl object-cover" /><p className="mt-4 text-sm font-bold text-slate-500">Menyiapkan SMART-ATT...</p></div></div>;
   if (!user && !demo) return <AuthScreen onDemo={() => setDemo(true)} />;
   const isSuperAdmin = user?.email?.toLowerCase() === SUPERADMIN_EMAIL;
@@ -725,8 +815,13 @@ function SmartAttApp() {
   if (pathname.startsWith("/superadmin")) return <SuperAdminDenied onLogout={async () => { if (user) await signOut(auth); setDemo(false); window.location.assign("/"); }} />;
   if (user && !demo && (!accountGate.loaded || (accountGate.verificationError && !showVerificationError))) return <div className="grid min-h-screen place-items-center bg-slate-50"><div className="text-center"><Loader2 className="mx-auto animate-spin text-teal-600" size={34}/><p className="mt-3 text-sm font-bold text-slate-500">Menyiapkan akun...</p></div></div>;
   if (user && !demo && accountGate.verificationError && showVerificationError) return <main className="grid min-h-screen place-items-center bg-slate-50 p-5"><section className="w-full max-w-md rounded-3xl border border-amber-100 bg-white p-8 text-center shadow-xl"><RefreshCcw className="mx-auto text-amber-600" size={40}/><h1 className="mt-5 text-2xl font-black">Status akun belum terbaca</h1><p className="mt-3 text-sm leading-6 text-slate-500">Koneksi ke data masa aktif sedang terganggu. Akun tidak dianggap expired dan Anda tidak perlu membeli token lagi.</p><button onClick={() => window.location.reload()} className="mt-6 w-full rounded-xl bg-teal-600 py-3 text-sm font-extrabold text-white">Coba verifikasi lagi</button><button onClick={() => void signOut(auth)} className="mt-4 text-xs font-black text-slate-500">Keluar dari akun</button></section></main>;
-  if (user && !demo && accountGate.disabled) return <AccountLockedScreen user={user} disabled onLogout={async () => { await signOut(auth); }} />;
-  if (user && !demo && accountGate.expiryMs > 0 && accountGate.expiryMs <= accountClock) return <AccountLockedScreen user={user} disabled={false} onLogout={async () => { await signOut(auth); }} />;
+  if (user && !demo && accountGate.disabled) return <AccountLockedScreen user={user} disabled accountType={accountAccess.accountType} onLogout={async () => { await signOut(auth); }} />;
+  if (user && !demo && accountGate.expiryMs > 0 && accountGate.expiryMs <= accountClock) return <AccountLockedScreen user={user} disabled={false} accountType={accountAccess.accountType} onLogout={async () => { await signOut(auth); }} />;
+
+  if (user && !demo && accountAccess.accountType === "school" && accountAccess.pendingApproval) return <main className="grid min-h-screen place-items-center bg-slate-50 p-5"><section className="w-full max-w-md rounded-3xl border border-sky-100 bg-white p-8 text-center shadow-xl"><RefreshCcw className="mx-auto text-sky-600" size={42}/><h1 className="mt-5 text-2xl font-black">Menunggu persetujuan sekolah</h1><p className="mt-3 text-sm leading-6 text-slate-500">Pendaftaran guru sudah diterima. Kepala Sekolah/TU perlu mengaktifkan akun dan menetapkan kelas sebelum Anda dapat masuk ke menu guru.</p><button onClick={() => void signOut(auth)} className="mt-6 rounded-xl bg-slate-950 px-5 py-3 text-xs font-black text-white">Keluar</button></section></main>;
+
+  if (user && !demo && accountAccess.accountType === "school" && (!accountAccess.schoolRole || !accountAccess.schoolId)) return <><SchoolOnboarding user={user} schoolName={accountProfile.schoolName} initialLevel={accountProfile.schoolLevel} onLogout={async()=>{await signOut(auth)}} setToast={setToast}/><ToastMessage toast={toast}/></>;
+  if (user && !demo && accountAccess.accountType === "school" && accountAccess.schoolRole && accountAccess.schoolId) return <><SchoolWorkspace user={user} access={accountAccess} initialName={accountProfile.name} onLogout={async()=>{await signOut(auth)}} setToast={setToast} QuizComponent={ExamsViewWithManual}/><ToastMessage toast={toast}/></>;
 
   return <><DashboardShell user={user} demo={demo} view={view} onView={setView} onLogout={async () => { if (user) await signOut(auth); setDemo(false); }} students={students} setStudents={setStudents} setToast={setToast} activeSession={activeSession} setActiveSession={setActiveSession} /><ToastMessage toast={toast} /></>;
 }
@@ -775,13 +870,15 @@ const HELP_GUIDES: HelpGuide[] = [
   { id: "navigasi", title: "Cara berpindah menu", summary: "Membuka menu lain tanpa kehilangan data yang sudah tersimpan.", menu: "Navigasi", keywords: ["pindah", "menu", "sidebar", "mobile", "navigasi"], icon: Menu, steps: ["Di laptop/desktop, gunakan menu di sidebar kiri: Ringkasan, Data Siswa, Scan Absensi, dan menu lainnya.", "Di HP, tekan ikon menu ☰ di kiri atas untuk membuka sidebar. Pilih menu, lalu sidebar akan tertutup otomatis.", "Empat shortcut di bagian bawah HP adalah Beranda, Siswa, Scan, dan Tabungan.", "Jika ingin kembali ke modul sebelumnya, buka bantuan ini lagi atau gunakan menu sidebar. Data yang sudah disimpan di Firestore tetap tersedia setelah berpindah menu."], tips: ["Perpindahan menu hanya mengubah tampilan; proses kamera akan dihentikan ketika Anda meninggalkan Scan Absensi."] },
   { id: "siswa-tambah", title: "Menambahkan data siswa", summary: "Cara mengisi siswa satu per satu, termasuk NIS, kelas, wali, dan foto.", menu: "Data Siswa", keywords: ["siswa", "tambah", "nis", "nisn", "foto", "wali", "edit", "hapus"], icon: UserPlus, nav: "students", steps: ["Buka menu Data Siswa, lalu tekan Tambah Siswa.", "Isi NIS, NISN, nama lengkap, dan pilih kelas. NIS, NISN, dan nama wajib diisi.", "Isi nama wali dan nomor WhatsApp jika sudah tersedia agar dapat digunakan untuk konfirmasi absensi.", "Pilih foto siswa. Atur crop dan rasio foto, lalu tekan Gunakan hasil crop.", "Tekan Simpan Siswa. Data siswa dan foto akan disimpan ke akun guru yang sedang login.", "Untuk memperbaiki data, pilih siswa lalu tekan Edit, ubah field yang diperlukan, dan simpan kembali.", "Untuk menghapus siswa, gunakan Hapus pada baris siswa dan konfirmasi setelah memastikan siswa yang dipilih benar."], tips: ["Pastikan NIS dan NISN tidak sama dengan siswa lain. Foto sebaiknya jelas, tegak, dan berformat JPG/PNG/WebP.", "Hapus hanya data yang memang tidak diperlukan karena riwayat absensi dan nilai dapat ikut tidak tampil pada daftar aktif."] },
   { id: "siswa-csv", title: "Import siswa dari CSV", summary: "Memasukkan banyak siswa sekaligus dari Excel/CSV.", menu: "Data Siswa", keywords: ["import", "csv", "excel", "bulk", "banyak siswa", "nis"], icon: Upload, nav: "students", steps: ["Buka Data Siswa dan pilih Import CSV.", "Siapkan file dengan header wajib: NIS, NISN, dan Nama Siswa. Header Kelas, Wali, Nomor WhatsApp, dan Nomor Absen bersifat tambahan.", "Pilih file CSV. Sistem mendeteksi pemisah koma, titik koma, atau tab.", "Periksa jumlah siswa yang terbaca dan jumlah baris yang dilewati. Baris tanpa NIS/NISN/nama atau duplikat akan dilewati.", "Pilih proses simpan/import, lalu tunggu notifikasi selesai sebelum berpindah menu."], tips: ["Simpan file sebagai UTF-8 CSV. Jangan memakai NIS atau NISN yang sama untuk dua siswa."] },
-  { id: "siswa-kartu", title: "Membuat dan mencetak kartu siswa", summary: "Membuat Student ID berisi logo, foto, identitas, dan QR absensi.", menu: "Data Siswa", keywords: ["kartu", "student id", "cetak", "print", "pdf", "barcode", "qr"], icon: Printer, nav: "students", steps: ["Pada Data Siswa, pilih siswa lalu buka Print Preview Student ID. Untuk banyak siswa, gunakan cetak batch.", "Pilih Card with Student Photo atau Card without Student Photo.", "Pilih Single Card atau layout A4 8/10 kartu. Layout 10 kartu menggunakan orientasi portrait agar kartu tidak terpotong.", "Periksa preview: foto berada di kiri, identitas di tengah, dan QR berada di kolom kanan.", "Pilih Download PDF untuk file PDF atau Print Selected/Print All untuk mencetak. Pada dialog printer gunakan ukuran asli/100%, kertas A4, dan margin tidak ada."], tips: ["QR harus tetap utuh dan tidak tertutup tulisan. Potong mengikuti tepi kartu yang siku."] },
+  { id: "siswa-kartu", title: "Membuat dan mencetak kartu siswa", summary: "Membuat Student ID berisi logo, foto, identitas, dan QR absensi.", menu: "Data Siswa", keywords: ["kartu", "student id", "cetak", "print", "pdf", "barcode", "qr"], icon: Printer, nav: "students", steps: ["Pada Data Siswa, pilih siswa lalu buka Print Preview Student ID. Untuk banyak siswa, gunakan cetak batch.", "Pilih Card with Student Photo atau Card without Student Photo.", "Pilih Single Card atau layout A4 8/10 kartu. Layout 10 kartu menggunakan orientasi portrait agar kartu tidak terpotong.", "Periksa preview: foto berada di kiri, identitas di tengah, dan QR berada di kolom kanan.", "Tekan Print Kartu atau Print Semua Kartu. Pada dialog printer gunakan ukuran asli/100%, kertas A4, margin tidak ada, dan aktifkan Background graphics agar desain ikut tercetak."], tips: ["QR harus tetap utuh dan tidak tertutup tulisan. Potong mengikuti tepi kartu yang siku."] },
   { id: "siswa-wali", title: "Membuat link data wali", summary: "Mengumpulkan nama wali dan nomor WhatsApp tanpa mengetik satu per satu.", menu: "Data Siswa", keywords: ["wali", "orang tua", "guardian", "link", "whatsapp"], icon: Link2, nav: "students", steps: ["Buka Data Siswa lalu pilih Pendataan Wali Murid.", "Pilih kelas yang ingin dikirimi link, lalu tekan Buat link kelas.", "Salin atau bagikan link tersebut kepada wali melalui WhatsApp.", "Wali memasukkan NIS, memeriksa nama siswa, lalu mengisi nama wali dan nomor WhatsApp.", "Saat guru membuka aplikasi, respons pending akan disinkronkan ke data siswa dan statusnya berubah menjadi diterapkan."], tips: ["Link wali bersifat untuk kelas yang dipilih. Jangan membagikannya di tempat publik jika daftar siswa tidak seharusnya diketahui umum."] },
   { id: "siswa-pindah", title: "Memindahkan siswa antar kelas/guru", summary: "Alur transfer siswa lama ke kelas atau akun guru tujuan menggunakan QR kartu siswa.", menu: "Data Siswa", keywords: ["pindah siswa", "transfer", "siswa lama", "kelas baru", "guru baru"], icon: ArrowRightLeft, nav: "students", steps: ["Pada akun guru tujuan, buka Data Siswa lalu pilih Pindai siswa lama.", "Minta kartu siswa yang sudah memiliki QR, lalu arahkan kamera ke QR tersebut.", "Periksa identitas siswa yang terbaca dan pilih kelas tujuan.", "Kirim permintaan transfer. Sistem membuat permintaan pending ke akun guru asal.", "Guru asal membuka notifikasi/permintaan transfer dan menyetujui permintaan tersebut.", "Setelah disetujui, data siswa beserta foto dan identitasnya tersedia pada kelas tujuan. Periksa kembali sebelum siswa mengikuti absensi."], tips: ["Jangan membuat siswa baru dengan NIS yang sama sebelum permintaan transfer selesai karena dapat menimbulkan duplikasi.", "Pastikan guru asal dan guru tujuan menggunakan akun sekolah yang benar saat menyetujui transfer."] },
   { id: "scan", title: "Cara scan QR dan mencatat kehadiran", summary: "Menyiapkan sesi, memindai kartu, memeriksa identitas, lalu menyimpan hadir/terlambat.", menu: "Scan Absensi", keywords: ["scan", "qr", "absen", "hadir", "terlambat", "kamera", "nis"], icon: ScanLine, nav: "scan", steps: ["Buka Scan Absensi, pilih tanggal, jam mulai scan, dan kelas.", "Tekan Siapkan Absensi. Izinkan akses kamera ketika browser meminta izin.", "Arahkan kamera ke QR pada kartu siswa. Jika kamera tidak tersedia, masukkan NIS secara manual.", "Periksa modal hasil scan: nama, NIS, kelas asal, foto, dan status yang akan dicatat.", "Tekan OK untuk menyimpan. Siswa dalam kelas akan masuk ke sesi attendanceSessions akun guru; siswa lintas kelas dicatat sebagai absensi lintas kelas.", "Scan berikutnya dapat dilakukan setelah modal tertutup. Siswa yang sudah tercatat tidak disimpan dua kali."], tips: ["Jika foto tidak muncul, pastikan foto siswa sudah tersimpan di Data Siswa. Jika kamera gagal, gunakan input NIS manual.", "Scan setelah sesi ditutup tetap dapat dilakukan dan akan ditandai terlambat."] },
   { id: "rekap-absen", title: "Membaca rekap absensi", summary: "Melihat hadir, terlambat, sakit, izin, alpha, dan mengirim konfirmasi wali.", menu: "Rekap Absensi", keywords: ["rekap", "absensi", "hadir", "sakit", "izin", "alpha", "bulanan", "semester"], icon: BarChart3, nav: "attendance", steps: ["Buka Rekap Absensi dan pilih kelas/periode yang ingin dilihat.", "Gunakan pencarian nama atau NIS untuk menemukan siswa tertentu.", "Baca kartu ringkasan untuk jumlah Hadir, Terlambat, Sakit, Izin, dan Belum Absen/Alpha.", "Pada daftar siswa yang belum hadir, tekan Kirim konfirmasi WA jika nomor wali tersedia.", "Wali memilih Sakit atau Izin dan mengisi alasan. Respons akan masuk ke rekap setelah guru membuka aplikasi dan sinkronisasi selesai.", "Gunakan tombol ekspor atau cetak jika ingin membagikan laporan."], tips: ["Alpha berarti belum memiliki status. Setelah wali mengirim alasan, periksa kembali rekap agar status berubah."] },
   { id: "tabungan", title: "Mencatat Tabungan Siswa", summary: "Menyimpan setoran, penarikan, saldo, dan pembatalan transaksi.", menu: "Tabungan Siswa", keywords: ["tabungan", "setoran", "penarikan", "saldo", "transaksi"], icon: Wallet, nav: "savings", steps: ["Buka Tabungan Siswa dan pilih Setoran atau Penarikan.", "Pilih siswa, masukkan nominal, tanggal, petugas, dan keterangan.", "Untuk penarikan, sistem memeriksa agar nominal tidak melebihi saldo aktif.", "Tekan Simpan transaksi. Data tersimpan sebagai ledger dan saldo dihitung dari transaksi aktif.", "Jika salah, gunakan Batalkan dan isi alasan. Transaksi tidak dihapus permanen; statusnya menjadi void.", "Gunakan Export Excel atau Export PDF untuk laporan."], tips: ["Periksa nama siswa dan nominal sebelum menyimpan. Pembatalan memerlukan alasan minimal tiga karakter."] },
   { id: "mapel", title: "Mengatur Mata Pelajaran dan sesi", summary: "Menentukan mapel, kelas, dan jam yang sedang diajar.", menu: "Mata Pelajaran", keywords: ["mapel", "mata pelajaran", "kelas", "sesi", "jam"], icon: BookOpen, nav: "subjects", steps: ["Buka Mata Pelajaran.", "Pilih mata pelajaran dan kelas yang sedang diajar.", "Atur jam mulai dan jam selesai sesi.", "Simpan sesi aktif. Sesi ini dipakai sebagai konteks saat membuat tugas dan soal AI.", "Jika pindah mengajar ke kelas/mapel lain, ubah sesi sebelum membuat tugas atau soal baru."], tips: ["Sesi aktif bukan jadwal permanen; ini konteks kerja saat ini. Pengaturan sekolah dan kelas permanen ada di Data Akademik."] },
+  { id: "jadwal-pelajaran", title: "Mengatur Jadwal Pelajaran", summary: "Membuat jadwal mengajar mingguan dan menjadikannya acuan modul pembelajaran.", menu: "Jadwal Pelajaran", keywords: ["jadwal", "hari", "jam mengajar", "mingguan", "kelas", "mapel"], icon: AlarmClock, nav: "schedule", steps: ["Buka Jadwal Pelajaran.", "Pilih hari, jam mulai, jam selesai, mata pelajaran, dan kelas.", "Tekan Simpan. Jadwal akan berulang setiap minggu.", "Klik kartu jadwal untuk menjadikannya Sesi Pembelajaran Aktif.", "Saat jadwal sedang berlangsung, gunakan tombol Buka Absensi atau Catatan Pembelajaran."], tips: ["Sistem menolak jadwal yang waktunya bertabrakan pada hari yang sama."] },
+  { id: "kalender-guru", title: "Menggunakan Kalender Guru", summary: "Melihat tanggal merah, mencatat agenda sekolah, dan menyimpan catatan pribadi per tanggal.", menu: "Kalender Guru", keywords: ["kalender", "agenda", "rapat", "workshop", "libur", "tanggal merah", "catatan guru"], icon: CalendarDays, nav: "calendar", steps: ["Buka Kalender Guru dan pilih tanggal.", "Tanggal merah nasional ditandai merah dan cuti bersama ditandai kuning.", "Isi nama, jenis, waktu, lokasi, dan keterangan agenda lalu simpan.", "Agenda pada tanggal terpilih tampil di samping kalender dan dapat diedit atau dihapus.", "Gunakan Catatan Guru di bagian bawah untuk pengingat pribadi pada tanggal tersebut."], tips: ["Catatan Guru tersimpan di akun Anda dan tidak dapat dibaca guru lain."] },
   { id: "catatan-pembelajaran", title: "Membuat Catatan Pembelajaran", summary: "Menyimpan catatan setiap selesai satu sesi mata pelajaran tanpa menimpa pertemuan sebelumnya.", menu: "Mata Pelajaran", keywords: ["catatan", "catatan pembelajaran", "ringkasan materi", "jam mengajar", "tindak lanjut", "histori"], icon: FileText, nav: "subjects", steps: ["Buka Mata Pelajaran dan pilih mata pelajaran serta kelas pada Sesi Pembelajaran Aktif.", "Atur jam mulai dan selesai sesuai sesi mengajar, lalu simpan sesi aktif.", "Setelah jam mengajar selesai, tekan Isi catatan sekarang atau Catatan Pembelajaran pada kartu mata pelajaran.", "Isi judul atau materi, catatan pembelajaran, serta tindak lanjut jika diperlukan.", "Tekan Simpan catatan sesi. Catatan disimpan berdasarkan tanggal, mapel, kelas, dan jam mengajar.", "Buka Catatan Pembelajaran kembali untuk melihat histori; pilih salah satu catatan jika perlu memperbaruinya."], tips: ["Setiap tanggal dan jam mengajar mempunyai catatan sendiri, jadi catatan lama tidak tertimpa.", "Periksa mapel, kelas, dan jam aktif sebelum menyimpan."] },
   { id: "akademik", title: "Mengatur data akademik", summary: "Mengisi sekolah, tahun ajaran, semester, kelas, jam masuk, dan KKM.", menu: "Data Akademik", keywords: ["akademik", "sekolah", "tahun ajaran", "semester", "kkm", "jam masuk"], icon: School, nav: "academic", steps: ["Buka Data Akademik.", "Isi nama sekolah dan tahun ajaran, misalnya 2026/2027.", "Pilih semester Ganjil atau Genap.", "Masukkan daftar kelas dipisahkan koma, misalnya VII A, VII B.", "Atur jam masuk untuk menentukan batas hadir dan terlambat.", "Atur KKM untuk digunakan pada rekap nilai.", "Tekan Simpan data akademik dan tunggu notifikasi berhasil."], tips: ["Kelas di sini menjadi pilihan pada Data Siswa dan Scan Absensi. Gunakan penulisan kelas yang konsisten."] },
   { id: "tugas", title: "Membuat dan membagikan tugas", summary: "Membuat PR, menyimpan draft, menerbitkan link, dan menonaktifkannya.", menu: "Tugas & PR", keywords: ["tugas", "pr", "deadline", "publish", "link"], icon: FileText, nav: "tasks", steps: ["Pastikan sesi mapel/kelas aktif pada Mata Pelajaran.", "Buka Tugas & PR lalu tekan Tugas Baru.", "Isi mata pelajaran, judul, instruksi/deskripsi, dan deadline.", "Simpan sebagai draft jika belum siap dibagikan.", "Aktifkan Publish untuk membuat public link. Salin link dan kirim kepada siswa.", "Gunakan Unpublish jika link tidak boleh diakses lagi. Perubahan tugas akan memperbarui snapshot publik."], tips: ["Tulis deadline dengan tanggal dan jam yang jelas. Link publik hanya menampilkan instruksi tugas, bukan data privat guru."] },
@@ -823,6 +920,9 @@ function HelpCenter({ currentView, onView, onClose }: { currentView: NavKey; onV
 function DashboardShell({ user, demo, view, onView, onLogout, students, setStudents, setToast, activeSession, setActiveSession }: { user: User | null; demo: boolean; view: NavKey; onView: (v: NavKey) => void; onLogout: () => void; students: Student[]; setStudents: React.Dispatch<React.SetStateAction<Student[]>>; setToast: (t: Toast) => void; activeSession: ActiveTeachingSession; setActiveSession: React.Dispatch<React.SetStateAction<ActiveTeachingSession>> }) {
   const [mobileNav, setMobileNav] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [profileHeader, setProfileHeader] = useState({ name: demo ? "Tomi Guru" : "Guru", teacherRole: demo ? "Guru Kelas V-A" : "Guru Kelas", profilePhotoKey: "" });
+  const [systemNotifications, setSystemNotifications] = useState<Array<{ id: string; source: "task" | "exam" | "agenda"; title: string; detail: string; view: NavKey; tone: string }>>([]);
   const [academicHeader, setAcademicHeader] = useState(DEFAULT_ACADEMIC_SETTINGS);
   const title = navGroups.flatMap((group) => group.items).find((item) => item.key === view)?.label ?? "Ringkasan";
   useEffect(() => {
@@ -841,6 +941,21 @@ function DashboardShell({ user, demo, view, onView, onLogout, students, setStude
       });
     });
   }, [user, demo]);
+  useEffect(() => {
+    if (demo || !user) return;
+    return onSnapshot(doc(db, "users", user.uid), (snapshot) => { const data = snapshot.data(); setProfileHeader({ name: typeof data?.name === "string" && data.name.trim() ? data.name.trim() : "Guru", teacherRole: typeof data?.teacherRole === "string" && data.teacherRole.trim() ? data.teacherRole.trim() : "Guru Kelas", profilePhotoKey: typeof data?.profilePhotoKey === "string" ? data.profilePhotoKey : "" }); });
+  }, [demo, user]);
+  useEffect(() => {
+    if (demo || !user) return;
+    const replaceSource = (source: "task" | "exam" | "agenda", next: Array<{ id: string; source: "task" | "exam" | "agenda"; title: string; detail: string; view: NavKey; tone: string }>) => setSystemNotifications((current) => [...current.filter((item) => item.source !== source), ...next]);
+    const now = Date.now(); const today = learningDateKey(now); const tomorrow = learningDateKey(now + 86400000);
+    const stops = [
+      onSnapshot(collection(db, "users", user.uid, "tasks"), (snapshot) => { const next = snapshot.docs.flatMap((item) => { const data = item.data() as Partial<TaskRecord>; const deadline = new Date(String(data.deadline || "")).getTime(); if (!data.published || !Number.isFinite(deadline) || deadline < now || deadline > now + 48 * 3600000) return []; return [{ id: `task-${item.id}`, source: "task" as const, title: `Tenggat tugas: ${data.title || "Tugas"}`, detail: `${data.className || "Kelas"} · ${new Date(deadline).toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short" })}`, view: "tasks" as NavKey, tone: "bg-amber-50 text-amber-700" }]; }); replaceSource("task", next); }),
+      onSnapshot(query(collection(db, "publicQuizAttempts"), where("ownerUid", "==", user.uid)), (snapshot) => { const violations = snapshot.docs.filter((item) => Array.isArray(item.data().violations) && item.data().violations.length > 0).slice(0, 8).map((item) => ({ id: `exam-${item.id}`, source: "exam" as const, title: `Pelanggaran ujian: ${String(item.data().studentName || "Siswa")}`, detail: `${item.data().violations.length} aktivitas perlu diperiksa`, view: "exams" as NavKey, tone: "bg-rose-50 text-rose-700" })); replaceSource("exam", violations); }),
+      onSnapshot(collection(db, "users", user.uid, "teacherAgendas"), (snapshot) => { const next = snapshot.docs.flatMap((item) => { const data = item.data(); if (data.date !== today && data.date !== tomorrow) return []; return [{ id: `agenda-${item.id}`, source: "agenda" as const, title: String(data.title || "Agenda guru"), detail: `${data.date === today ? "Hari ini" : "Besok"} · ${String(data.startTime || "")}`, view: "calendar" as NavKey, tone: "bg-violet-50 text-violet-700" }]; }); replaceSource("agenda", next); }),
+    ];
+    return () => stops.forEach((stop) => stop());
+  }, [demo, user]);
   return (
     <div className="min-h-screen bg-[#f4f7f9] text-slate-900">
       {mobileNav && <button aria-label="Tutup menu" className="fixed inset-0 z-40 bg-slate-950/40 backdrop-blur-sm lg:hidden" onClick={() => setMobileNav(false)} />}
@@ -854,14 +969,16 @@ function DashboardShell({ user, demo, view, onView, onLogout, students, setStude
       <div className="min-w-0 max-w-full overflow-x-clip lg:pl-[270px]">
         <header className="sticky top-0 z-30 flex h-[68px] items-center justify-between border-b border-slate-200/80 bg-white/90 px-3 sm:h-[74px] sm:px-7 backdrop-blur-xl sm:px-7">
           <div className="flex items-center gap-3"><button onClick={() => setMobileNav(true)} className="rounded-xl border border-slate-200 p-2.5 text-slate-600 lg:hidden"><Menu size={20} /></button><div><p className="text-[11px] font-bold text-slate-400">Tahun Ajaran {academicHeader.academicYear} · {academicHeader.semester}</p><h1 className="text-lg font-black tracking-tight sm:text-xl">{title}</h1></div></div>
-          <div className="flex items-center gap-2 sm:gap-3"><button aria-label="Notifikasi" className="relative hidden rounded-xl border border-slate-200 bg-white p-2.5 text-slate-600 sm:block"><Bell size={18} /><span className="absolute right-2 top-2 h-2 w-2 rounded-full border-2 border-white bg-rose-500" /></button><div className="hidden h-9 w-px bg-slate-200 sm:block" /><button className="hidden items-center gap-3 rounded-xl px-1.5 py-1 transition hover:bg-slate-50 sm:flex"><div className="grid h-9 w-9 place-items-center rounded-xl bg-teal-100 text-sm font-black text-teal-700">TG</div><div className="hidden text-left md:block"><p className="text-xs font-extrabold">{demo ? "Tomi Guru" : user?.email?.split("@")[0]}</p><p className="text-[10px] text-slate-400">Guru · Administrator</p></div><ChevronDown className="hidden text-slate-400 md:block" size={15} /></button><button onClick={onLogout} title="Keluar" className="rounded-xl p-2.5 text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"><LogOut size={18} /></button></div>
+          <div className="flex items-center gap-2 sm:gap-3"><div className="relative hidden sm:block"><button onClick={() => setNotificationsOpen((value) => !value)} aria-label="Notifikasi" className="relative rounded-xl border border-slate-200 bg-white p-2.5 text-slate-600"><Bell size={18}/>{systemNotifications.length > 0 && <span className="absolute right-1.5 top-1.5 grid h-4 min-w-4 place-items-center rounded-full border-2 border-white bg-rose-500 px-0.5 text-[7px] font-black text-white">{Math.min(9, systemNotifications.length)}</span>}</button>{notificationsOpen && <div className="absolute right-0 top-12 z-50 w-80 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl"><div className="border-b border-slate-100 p-4"><p className="text-sm font-black">Notifikasi sistem</p><p className="mt-1 text-[10px] text-slate-400">Tugas, agenda, dan pengawasan ujian</p></div><div className="max-h-96 overflow-y-auto p-2">{systemNotifications.map((item) => <button key={item.id} onClick={() => { onView(item.view); setNotificationsOpen(false); }} className="flex w-full gap-3 rounded-xl p-3 text-left hover:bg-slate-50"><span className={`mt-0.5 h-9 w-9 shrink-0 rounded-xl ${item.tone}`}/><span className="min-w-0"><span className="block text-xs font-black">{item.title}</span><span className="mt-1 block text-[10px] leading-4 text-slate-400">{item.detail}</span></span></button>)}{!systemNotifications.length && <div className="px-4 py-10 text-center"><CheckCircle2 className="mx-auto text-emerald-500" size={28}/><p className="mt-3 text-xs font-black text-slate-600">Tidak ada notifikasi baru</p></div>}</div></div>}</div><div className="hidden h-9 w-px bg-slate-200 sm:block"/><button onClick={() => onView("profile")} className="hidden items-center gap-3 rounded-xl px-1.5 py-1 transition hover:bg-slate-50 sm:flex"><PrivateStudentPhoto user={user} photoKey={profileHeader.profilePhotoKey} alt={`Foto ${profileHeader.name}`} className="h-9 w-9 rounded-xl object-cover" fallback={<div className="grid h-9 w-9 place-items-center rounded-xl bg-teal-100 text-sm font-black text-teal-700">{profileHeader.name.split(" ").slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "GR"}</div>}/><div className="hidden max-w-40 text-left md:block"><p className="truncate text-xs font-extrabold">{profileHeader.name}</p><p className="truncate text-[10px] text-slate-400">{profileHeader.teacherRole}</p></div><ChevronDown className="hidden text-slate-400 md:block" size={15}/></button><button onClick={onLogout} title="Keluar" className="rounded-xl p-2.5 text-slate-400 transition hover:bg-rose-50 hover:text-rose-600"><LogOut size={18}/></button></div>
         </header>
         <main className="mx-auto w-full min-w-0 max-w-[1500px] overflow-x-clip p-3 pb-28 sm:p-7 lg:pb-7">
           {view === "dashboard" && <Overview user={user} demo={demo} students={students} onView={onView} setToast={setToast} />}
           {view === "students" && <StudentsView user={user} demo={demo} students={students} configuredClasses={academicHeader.classNames} setStudents={setStudents} setToast={setToast} />}
-          {view === "scan" && <ScannerViewPro user={user} demo={demo} students={students} configuredClasses={academicHeader.classNames} schoolName={academicHeader.schoolName} setToast={setToast} />}
+          {view === "scan" && <ScannerViewPro user={user} demo={demo} students={students} configuredClasses={academicHeader.classNames} schoolName={academicHeader.schoolName} initialClassName={activeSession.className} initialStartTime={activeSession.startTime} setToast={setToast} />}
           {view === "attendance" && <AttendanceViewPro user={user} demo={demo} students={students} setToast={setToast} />}
-          {view === "savings" && <SavingsView user={user} demo={demo} students={students} setToast={setToast} />}
+          {view === "savings" && <><SavingsShareManager user={user} demo={demo} students={students} setToast={setToast} /><SavingsView user={user} demo={demo} students={students} setToast={setToast} /></>}
+          {view === "schedule" && <TeachingScheduleView user={user} demo={demo} classes={academicHeader.classNames} setActiveSession={setActiveSession} setToast={setToast} onView={onView} />}
+          {view === "calendar" && <TeacherCalendarView user={user} demo={demo} setToast={setToast} />}
           {view === "subjects" && <SubjectsView user={user} demo={demo} students={students} configuredClasses={academicHeader.classNames} activeSession={activeSession} setActiveSession={setActiveSession} setToast={setToast} onView={onView} />}
           {view === "tasks" && <TasksView user={user} demo={demo} students={students} activeSession={activeSession} setToast={setToast} />}
           {view === "exams" && <ExamsViewWithManual user={user} demo={demo} students={students} setToast={setToast} />}
@@ -1096,7 +1213,7 @@ function Overview({user,demo,students,onView,setToast}:{user:User|null;demo:bool
     if(!user)return;
     const fail=()=>setToast({message:"Sebagian data Ringkasan belum dapat disinkronkan.",tone:"error"});
     const stops=[
-      onSnapshot(collection(db,"users",user.uid,"attendanceSessions"),(snapshot)=>setSessions(snapshot.docs.map((item)=>{const data=item.data() as Omit<AbsensiSession,"id">;return{id:item.id,...data,records:data.records??{}}}).sort((a,b)=>b.startedAtMs-a.startedAtMs)),fail),
+      onSnapshot(collection(db,"users",user.uid,"attendanceSessions"),(snapshot)=>setSessions(snapshot.docs.filter((item)=>item.data().deleted!==true).map((item)=>{const data=item.data() as Omit<AbsensiSession,"id">;return{id:item.id,...data,records:data.records??{}}}).sort((a,b)=>b.startedAtMs-a.startedAtMs)),fail),
       onSnapshot(collection(db,"users",user.uid,"tasks"),(snapshot)=>setTasks(snapshot.docs.map((item)=>({id:item.id,...item.data()} as TaskRecord))),fail),
       onSnapshot(collection(db,"users",user.uid,"exams"),(snapshot)=>setExams(snapshot.docs.map((item)=>({id:item.id,...item.data()} as ExamRecord))),fail),
       onSnapshot(doc(db,"users",user.uid,"settings","academic"),(snapshot)=>{if(snapshot.exists()){const data=snapshot.data() as Partial<AcademicSettings>;setAcademic({schoolName:typeof data.schoolName==="string"?data.schoolName:DEFAULT_ACADEMIC_SETTINGS.schoolName,academicYear:typeof data.academicYear==="string"?data.academicYear:DEFAULT_ACADEMIC_SETTINGS.academicYear,semester:data.semester==="Genap"?"Genap":"Ganjil",classNames:Array.isArray(data.classNames)?data.classNames:DEFAULT_ACADEMIC_SETTINGS.classNames,entryTime:typeof data.entryTime==="string"?data.entryTime:DEFAULT_ACADEMIC_SETTINGS.entryTime,kkm:typeof data.kkm==="number"?data.kkm:DEFAULT_ACADEMIC_SETTINGS.kkm})}},fail),
@@ -1188,23 +1305,25 @@ function studentQrPayload(student: Student) {
   return student.id;
 }
 
-function StudentQrCard({student,schoolName,academicYear,user,template="photo",photoSrc=""}:{student:Student;schoolName:string;academicYear:string;user?:User|null;template?:"photo"|"no-photo";photoSrc?:string}){
+function StudentQrCard({student,schoolName,academicYear,user,schoolLogoKey="",template="photo",photoSrc,schoolLogoSrc,appLogoSrc}:{student:Student;schoolName:string;academicYear:string;user?:User|null;schoolLogoKey?:string;template?:"photo"|"no-photo";photoSrc?:string|null;schoolLogoSrc?:string|null;appLogoSrc?:string}){
   const initials=student.name.split(" ").filter(Boolean).slice(0,2).map((part)=>part[0]).join("").toUpperCase();
   const withPhoto=template==="photo";
-  return <article className="student-qr-card relative mx-auto aspect-[85.6/54] w-full max-w-[342px] overflow-hidden rounded-none border border-sky-300 bg-white text-slate-950 shadow-[0_18px_45px_rgba(14,116,144,0.18)]">
+  const photoFallback=<div className="grid h-full min-h-[108px] w-full place-items-center rounded-none bg-gradient-to-br from-sky-100 to-white text-base font-black text-sky-800">{initials||"ID"}</div>;
+  return <article className="student-qr-card relative mx-auto h-[54mm] w-[85.6mm] shrink-0 overflow-hidden rounded-none border border-sky-300 bg-white text-slate-950 shadow-[0_18px_45px_rgba(14,116,144,0.18)]">
     <header className="relative flex h-[52px] items-center gap-2.5 overflow-hidden bg-sky-300 px-3.5 text-sky-950">
-      <div className="absolute -left-10 -top-14 h-24 w-64 rotate-[8deg] rounded-[50%] bg-sky-200/80"/>
-      <div className="absolute -right-16 -top-8 h-20 w-56 -rotate-[10deg] rounded-[50%] bg-sky-400/45"/>
-      <img src="/logo.png" alt="Logo SMART-ATT" className="student-qr-logo relative h-8 w-8 shrink-0 rounded-lg bg-white object-cover p-0.5 shadow-sm"/>
-      <div className="relative min-w-0 flex-1"><p className="truncate text-[9px] font-black uppercase tracking-[0.12em]">{schoolName}</p><p className="mt-0.5 text-[6.5px] font-extrabold uppercase tracking-[0.18em] text-sky-800">SMART-ATT · Kartu Identitas Siswa</p></div>
+      <div className="absolute -left-10 -top-14 h-24 w-64 rotate-[8deg] rounded-[50%]" style={{backgroundColor:"rgba(186,230,253,0.8)"}}/>
+      <div className="absolute -right-16 -top-8 h-20 w-56 -rotate-[10deg] rounded-[50%]" style={{backgroundColor:"rgba(56,189,248,0.45)"}}/>
+      <img src={appLogoSrc||"/logo.png"} loading="eager" decoding="sync" alt="Logo SMART-ATT" className="student-qr-logo relative h-8 w-8 shrink-0 rounded-lg bg-white object-cover p-0.5 shadow-sm"/>
+      <div className="relative min-w-0 flex-1"><p className="truncate text-[9px] font-black uppercase leading-[1.4] tracking-[0.12em]">{schoolName}</p><p className="mt-0.5 text-[6.5px] font-extrabold uppercase leading-[1.35] tracking-[0.18em] text-sky-800">SMART-ATT · Kartu Identitas Siswa</p></div>
+      {schoolLogoSrc!==undefined?(schoolLogoSrc?<img src={schoolLogoSrc} loading="eager" decoding="sync" alt={`Logo ${schoolName}`} className="student-school-logo relative h-9 w-9 shrink-0 rounded-none object-contain"/>:<School size={22} className="relative shrink-0 text-sky-900"/>):schoolLogoKey?<PrivateStudentPhoto user={user ?? null} photoKey={schoolLogoKey} alt={`Logo ${schoolName}`} className="student-school-logo relative h-9 w-9 shrink-0 rounded-none object-contain" fallback={<School size={22} className="relative text-sky-900"/>}/>:<School size={22} className="relative shrink-0 text-sky-900"/>}
     </header>
     <div className={`grid h-[calc(100%_-_52px)] min-h-0 items-stretch gap-2.5 bg-[linear-gradient(135deg,#ffffff_0%,#f0f9ff_100%)] p-3 ${withPhoto?"grid-cols-[29%_1fr_26%]":"grid-cols-[1fr_27%]"}`}>
-      {withPhoto&&<div className="min-w-0 rounded-none border-2 border-sky-300 bg-sky-50 p-1 shadow-sm">{photoSrc?<img src={photoSrc} alt={"Foto "+student.name} className="h-full min-h-0 w-full rounded-none object-cover"/>:<PrivateStudentPhoto user={user??null} photoKey={student.photoThumbnailKey??student.photoKey} alt={"Foto "+student.name} className="h-full min-h-0 w-full rounded-none object-cover" fallback={<div className="grid h-full min-h-[108px] w-full place-items-center rounded-none bg-gradient-to-br from-sky-100 to-white text-base font-black text-sky-800">{initials||"ID"}</div>}/>}</div>}
+      {withPhoto&&<div className="min-w-0 rounded-none border-2 border-sky-300 bg-sky-50 p-1 shadow-sm">{photoSrc!==undefined?(photoSrc?<img src={photoSrc} loading="eager" decoding="sync" alt={"Foto "+student.name} className="h-full min-h-0 w-full rounded-none object-cover"/>:photoFallback):<PrivateStudentPhoto user={user??null} photoKey={student.photoThumbnailKey??student.photoKey} alt={"Foto "+student.name} className="h-full min-h-0 w-full rounded-none object-cover" fallback={photoFallback}/>}</div>}
       <section className="min-w-0 overflow-hidden py-0.5 text-left">
-        <p className="text-[7px] font-black uppercase tracking-[0.16em] text-sky-700">Kartu Pelajar</p>
-        <h3 className={`mt-1 line-clamp-2 font-black leading-[1.05] text-slate-950 ${withPhoto?"text-[13px]":"text-[17px]"}`}>{student.name}</h3>
-        <dl className={`mt-2 grid grid-cols-[32px_1fr] gap-x-1.5 gap-y-1 font-bold ${withPhoto?"text-[7px]":"text-[8.5px]"}`}><dt className="uppercase tracking-[0.12em] text-sky-700">NIS</dt><dd className="truncate text-slate-900">{student.nis}</dd><dt className="uppercase tracking-[0.12em] text-sky-700">NISN</dt><dd className="truncate text-slate-900">{student.nisn||"-"}</dd><dt className="uppercase tracking-[0.12em] text-sky-700">Kelas</dt><dd className="truncate text-slate-900">{student.className}</dd></dl>
-        <p className="mt-2 truncate text-[6px] font-extrabold uppercase tracking-[0.13em] text-slate-400">Tahun Ajaran {academicYear}</p>
+        <p className="text-[7px] font-black uppercase leading-[1.3] tracking-[0.16em] text-sky-700">Kartu Pelajar</p>
+        <h3 className={`mt-0.5 overflow-hidden break-words font-black leading-[1.2] text-slate-950 ${withPhoto?"max-h-[27px] text-[11px]":"max-h-[38px] text-[15px]"}`}>{student.name}</h3>
+        <dl className={`mt-1.5 grid grid-cols-[32px_1fr] gap-x-1.5 gap-y-0.5 font-bold leading-[1.25] ${withPhoto?"text-[7px]":"text-[8.5px]"}`}><dt className="uppercase tracking-[0.12em] text-sky-700">NIS</dt><dd className="truncate text-slate-900">{student.nis}</dd><dt className="uppercase tracking-[0.12em] text-sky-700">NISN</dt><dd className="truncate text-slate-900">{student.nisn||"-"}</dd><dt className="uppercase tracking-[0.12em] text-sky-700">Kelas</dt><dd className="truncate text-slate-900">{student.className}</dd></dl>
+        <p className="mt-1.5 truncate text-[5.5px] font-extrabold uppercase leading-[1.3] tracking-[0.12em] text-slate-400">Tahun Ajaran {academicYear}</p>
       </section>
       <aside className="flex min-w-0 flex-col items-center justify-center rounded-none border border-sky-200 bg-white p-1.5 shadow-sm">
         <QRCodeSVG value={studentQrPayload(student)} size={68} level="M" includeMargin={false} className="student-qr-code h-[68px] w-[68px] max-w-full shrink-0"/>
@@ -1239,17 +1358,21 @@ function StudentsView({ user, demo, students, configuredClasses, setStudents, se
   const classOptions = Array.from(new Set([...configuredClasses, ...students.map((student) => student.className)].map((item) => item.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b, "id-ID"));
   const defaultClass = classOptions[0] ?? "V-A";
   const emptyForm = { nis: "", nisn: "", name: "", className: defaultClass, guardian: "", phone: "" };
-  const [search, setSearch] = useState(""); const [classFilter, setClassFilter] = useState("Semua kelas"); const [modal, setModal] = useState(false); const [transferModal,setTransferModal]=useState(false); const [qrStudent, setQrStudent] = useState<Student | null>(null); const [qrBatch, setQrBatch] = useState(false); const [cardTemplate,setCardTemplate]=useState<"photo"|"no-photo">("photo"); const [printLayout,setPrintLayout]=useState<"single"|"a4-8"|"a4-10"|"a4-12">("a4-8"); const [printOrientation,setPrintOrientation]=useState<"portrait"|"landscape">("portrait"); const [pdfDownloading, setPdfDownloading] = useState(false); const [saving, setSaving] = useState(false);
+  const [search, setSearch] = useState(""); const [classFilter, setClassFilter] = useState("Semua kelas"); const [modal, setModal] = useState(false); const [transferModal,setTransferModal]=useState(false); const [qrStudent, setQrStudent] = useState<Student | null>(null); const [qrBatch, setQrBatch] = useState(false); const [cardTemplate,setCardTemplate]=useState<"photo"|"no-photo">("photo"); const [printLayout,setPrintLayout]=useState<"single"|"a4-8"|"a4-10"|"a4-12">("a4-8"); const [printOrientation,setPrintOrientation]=useState<"portrait"|"landscape">("portrait"); const [isMobilePdf,setIsMobilePdf]=useState(false); const [mobilePdfGenerating,setMobilePdfGenerating]=useState(false); const [mobilePdfProgress,setMobilePdfProgress]=useState(0); const [mobilePdfMessage,setMobilePdfMessage]=useState(""); const [mobilePdfError,setMobilePdfError]=useState(""); const [mobilePdfEmail,setMobilePdfEmail]=useState(""); const [mobilePdfDownloadUrl,setMobilePdfDownloadUrl]=useState(""); const [saving, setSaving] = useState(false);
   const [form, setForm] = useState(emptyForm); const [photo, setPhoto] = useState<File | null>(null); const [thumbnail, setThumbnail] = useState<File | null>(null); const [photoAspect,setPhotoAspect]=useState<PhotoAspect>("3:4"); const [photoProcessing,setPhotoProcessing]=useState(false); const [editingStudent, setEditingStudent] = useState<Student | null>(null);
   const [guardianModal, setGuardianModal] = useState(false); const [guardianClass, setGuardianClass] = useState(defaultClass); const [guardianLink, setGuardianLink] = useState(""); const [publishingLink, setPublishingLink] = useState(false);
   const [schoolName,setSchoolName]=useState(demo?"SMP Harapan Bangsa":"Sekolah");
   const [academicYear,setAcademicYear]=useState("2026/2027");
+  const [schoolLogoKey,setSchoolLogoKey]=useState("");
   const [crossLocations,setCrossLocations]=useState<Record<string,{scannedClassName:string;scannedSchoolName:string;dateKey:string}>>({});
   const [sharedClassLocations,setSharedClassLocations]=useState<Record<string,{scannedClassName:string;scannedSchoolName:string;dateKey:string}>>({});
   const [pendingClassRequests,setPendingClassRequests]=useState<Array<{id:string;studentName:string;nis:string;sourceClassName:string;targetClassName:string;targetSchoolName:string}>>([]);
   const processingTransferRef=useRef<Record<string,boolean>>({});
   const directorySyncedRef=useRef(false);
-  useEffect(()=>{if(demo){setSchoolName("SMP Harapan Bangsa");setAcademicYear("2026/2027");return;}if(!user)return;void Promise.all([getDoc(doc(db,"users",user.uid)),getDoc(doc(db,"users",user.uid,"settings","academic"))]).then(([profile,academic])=>{const profileSchool=profile.data()?.schoolName;const academicData=academic.data();const academicSchool=academicData?.schoolName;if(typeof academicSchool==="string"&&academicSchool.trim())setSchoolName(academicSchool.trim());else if(typeof profileSchool==="string"&&profileSchool.trim())setSchoolName(profileSchool.trim());if(typeof academicData?.academicYear==="string"&&academicData.academicYear.trim())setAcademicYear(academicData.academicYear.trim());});},[demo,user]);
+  // Device detection is intentionally client-only because the desktop print flow must remain unchanged.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(()=>{const userAgent=navigator.userAgent;setIsMobilePdf(/Android|iPhone|iPad|iPod|Mobile/i.test(userAgent)||(/Macintosh/i.test(userAgent)&&navigator.maxTouchPoints>1))},[]);
+  useEffect(()=>{if(demo){setSchoolName("SMP Harapan Bangsa");setAcademicYear("2026/2027");setSchoolLogoKey("");return;}if(!user)return;void Promise.all([getDoc(doc(db,"users",user.uid)),getDoc(doc(db,"users",user.uid,"settings","academic"))]).then(([profile,academic])=>{const profileData=profile.data();const profileSchool=profileData?.schoolName;const academicData=academic.data();const academicSchool=academicData?.schoolName;if(typeof academicSchool==="string"&&academicSchool.trim())setSchoolName(academicSchool.trim());else if(typeof profileSchool==="string"&&profileSchool.trim())setSchoolName(profileSchool.trim());if(typeof academicData?.academicYear==="string"&&academicData.academicYear.trim())setAcademicYear(academicData.academicYear.trim());const logo=typeof academicData?.schoolLogoKey==="string"?academicData.schoolLogoKey:typeof profileData?.schoolLogoKey==="string"?profileData.schoolLogoKey:"";setSchoolLogoKey(logo);});},[demo,user]);
   useEffect(() => { if (classOptions.length && !classOptions.includes(guardianClass)) setGuardianClass(classOptions[0]); }, [classOptions.join("\u0001"), guardianClass]);
   useEffect(() => {
     if (!user || demo || !students.length || directorySyncedRef.current || schoolName === "Sekolah") return;
@@ -1289,6 +1412,7 @@ function StudentsView({ user, demo, students, configuredClasses, setStudents, se
   },[user,demo,schoolName,setToast]);
   const otherLocations={...crossLocations,...sharedClassLocations};
   const visible = students.filter((s) => (classFilter === "Semua kelas" || s.className === classFilter) && `${s.name} ${s.id} ${s.nis} ${s.nisn ?? ""}`.toLowerCase().includes(search.toLowerCase()));
+  const printStudents=qrStudent?[qrStudent]:qrBatch?visible:[];
   async function respondToClassRequest(requestId:string,approved:boolean){
     if(!user)return;
     try{await updateDoc(doc(db,"studentClassLinks",requestId),approved?{status:"approved",active:true,approvedBy:user.uid,approvedAt:serverTimestamp(),updatedAt:serverTimestamp()}:{status:"rejected",active:false,rejectedBy:user.uid,rejectedAt:serverTimestamp(),updatedAt:serverTimestamp()});setToast({message:approved?"Permintaan disetujui. Guru baru akan menerima biodata dan foto siswa.":"Permintaan pendaftaran ditolak.",tone:approved?"success":"error"});}catch{setToast({message:"Respons permintaan belum dapat disimpan.",tone:"error"});}
@@ -1414,6 +1538,25 @@ function StudentsView({ user, demo, students, configuredClasses, setStudents, se
       input.value = "";
     }
   }
+  function resetMobilePdfState(){setMobilePdfGenerating(false);setMobilePdfProgress(0);setMobilePdfMessage("");setMobilePdfError("");setMobilePdfEmail("");setMobilePdfDownloadUrl("");}
+  async function generateMobilePdf(targetStudents:Student[]){
+    if(!user||demo){setMobilePdfError("Generate PDF melalui email hanya tersedia untuk akun guru yang sudah login.");return;}
+    if(!targetStudents.length||targetStudents.length>120){setMobilePdfError("Pilih 1 sampai 120 siswa untuk dibuatkan PDF.");return;}
+    setMobilePdfGenerating(true);setMobilePdfProgress(1);setMobilePdfMessage("Menghubungkan ke layanan PDF...");setMobilePdfError("");setMobilePdfEmail("");setMobilePdfDownloadUrl("");
+    try{
+      const token=await user.getIdToken();
+      const targetEmail=(user.email||"").trim();
+      const response=await fetch("/api/storage/generate-student-cards-pdf",{method:"POST",headers:{Authorization:`Bearer ${token}`,"Content-Type":"application/json"},body:JSON.stringify({students:targetStudents.map((student)=>({id:student.id,nis:student.nis,nisn:student.nisn??"",name:student.name,className:student.className,photoKey:student.photoKey??"",photoThumbnailKey:student.photoThumbnailKey??""})),schoolName,academicYear,schoolLogoKey,template:cardTemplate,layout:printLayout,orientation:printOrientation,email:targetEmail})});
+      if(!response.ok){const failure=await response.json().catch(()=>null) as {error?:string}|null;throw new Error(failure?.error||`Server PDF gagal merespons (${response.status}).`)}
+      if(!response.body)throw new Error("Browser tidak dapat membaca progress pembuatan PDF.");
+      const reader=response.body.getReader();const decoder=new TextDecoder();let pending="";let completed=false;
+      const processLine=(line:string)=>{if(!line.trim())return;const event=JSON.parse(line) as {type?:string;percent?:number;message?:string;email?:string;downloadUrl?:string};if(event.type==="error")throw new Error(event.message||"PDF gagal dibuat.");if(typeof event.percent==="number")setMobilePdfProgress(Math.min(100,Math.max(0,event.percent)));if(event.message)setMobilePdfMessage(event.message);if(event.downloadUrl)setMobilePdfDownloadUrl(event.downloadUrl);if(event.type==="complete"){completed=true;setMobilePdfEmail(event.email||targetEmail||"");setToast({message:event.message||"PDF berhasil dibuat. Silakan cek email Anda atau unduh langsung.",tone:"success"})}};
+      while(true){const {done,value}=await reader.read();pending+=decoder.decode(value,{stream:!done});const lines=pending.split("\n");pending=lines.pop()??"";for(const line of lines)processLine(line);if(done)break}
+      if(pending.trim())processLine(pending);
+      if(!completed)throw new Error("Proses PDF berhenti sebelum file selesai dibuat.");
+    }catch(error){const message=error instanceof Error?error.message:"PDF gagal dibuat. Silakan coba kembali.";setMobilePdfError(message);setMobilePdfMessage("");setToast({message,tone:"error"});}
+    finally{setMobilePdfGenerating(false)}
+  }
   function printQrCards(){
     const printRoot=document.querySelector<HTMLElement>(".qr-print-root");
     if(!printRoot){setToast({message:"Pratinjau kartu belum siap dicetak.",tone:"error"});return;}
@@ -1424,75 +1567,15 @@ function StudentsView({ user, demo, students, configuredClasses, setStudents, se
     const pageSize=printLayout==="single"?"85.6mm 54mm":`A4 ${effectiveOrientation}`;
     printWindow.opener=null;
     printWindow.document.open();
-    printWindow.document.write(`<!doctype html><html><head><meta charset="utf-8"><base href="${window.location.origin}/"><title>Cetak Student ID SMART-ATT</title>${styles}<style>@page{size:${pageSize};margin:0}html,body{margin:0!important;background:#fff!important}.qr-print-root{position:static!important}</style></head><body>${printRoot.outerHTML}<script>const images=Array.from(document.images);Promise.all(images.map((image)=>image.complete?Promise.resolve():new Promise((resolve)=>{image.onload=resolve;image.onerror=resolve}))).then(()=>setTimeout(()=>{window.onafterprint=()=>window.close();window.focus();window.print()},300));<\/script></body></html>`);
+    printWindow.document.write(`<!doctype html><html><head><meta charset="utf-8"><base href="${window.location.origin}/"><title>Cetak Student ID SMART-ATT</title>${styles}<style>@page{size:${pageSize};margin:0}html,body{margin:0!important;background:#fff!important}.qr-print-root{position:static!important}.student-qr-card,.student-qr-card *{-webkit-print-color-adjust:exact!important;print-color-adjust:exact!important}</style></head><body>${printRoot.outerHTML}<script>(async()=>{const links=Array.from(document.querySelectorAll('link[rel="stylesheet"]'));await Promise.all(links.map((link)=>link.sheet?Promise.resolve():new Promise((resolve)=>{link.addEventListener('load',resolve,{once:true});link.addEventListener('error',resolve,{once:true})})));const images=Array.from(document.images);await Promise.all(images.map(async(image)=>{if(!image.complete)await new Promise((resolve,reject)=>{image.addEventListener('load',resolve,{once:true});image.addEventListener('error',()=>reject(new Error('Gambar cetak gagal dimuat')),{once:true})});if(image.decode)await image.decode()}));if(document.fonts?.ready)await document.fonts.ready;requestAnimationFrame(()=>requestAnimationFrame(()=>{window.onafterprint=()=>window.close();window.focus();window.print()}))})().catch((error)=>{document.body.innerHTML='<p style="font:16px sans-serif;padding:24px">'+error.message+'. Tutup halaman ini lalu coba kembali.</p>'})();<\/script></body></html>`);
     printWindow.document.close();
-  }
-  async function downloadQrPdf(targetStudents=visible,layout=printLayout,orientation=printOrientation){
-    const pdfStudents=targetStudents;
-    if(!pdfStudents.length){setToast({message:"Tidak ada siswa untuk dibuatkan PDF.",tone:"error"});return;}
-    setPdfDownloading(true);
-    try{
-      const {jsPDF}=await import("jspdf");
-      const qrElements=Array.from(document.querySelectorAll<SVGSVGElement>(".qr-print-root .student-qr-code"));
-      if(qrElements.length<pdfStudents.length)throw new Error("Pratinjau QR belum siap. Tutup lalu buka kembali pratinjau Student ID.");
-      const logoData=await fetch("/logo.png").then((response)=>{if(!response.ok)throw new Error("Logo tidak dapat dimuat");return response.blob()}).then((blob)=>new Promise<string>((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(String(reader.result));reader.onerror=()=>reject(new Error("Logo tidak dapat dibaca"));reader.readAsDataURL(blob)}));
-      const qrImages=await Promise.all(qrElements.slice(0,pdfStudents.length).map((svg)=>new Promise<string>((resolve,reject)=>{
-        const clone=svg.cloneNode(true) as SVGSVGElement;clone.setAttribute("xmlns","http://www.w3.org/2000/svg");clone.setAttribute("width","1024");clone.setAttribute("height","1024");
-        const source=new XMLSerializer().serializeToString(clone);const url=URL.createObjectURL(new Blob([source],{type:"image/svg+xml;charset=utf-8"}));const image=new Image();
-        image.onload=()=>{try{const canvas=document.createElement("canvas");canvas.width=1024;canvas.height=1024;const context=canvas.getContext("2d");if(!context)throw new Error("Canvas tidak tersedia");context.fillStyle="#ffffff";context.fillRect(0,0,1024,1024);context.drawImage(image,0,0,1024,1024);resolve(canvas.toDataURL("image/png"));}catch(error){reject(error)}finally{URL.revokeObjectURL(url)}};
-        image.onerror=()=>{URL.revokeObjectURL(url);reject(new Error("QR tidak dapat dirender"))};image.src=url;
-      })));
-      const token=user&&!demo?await user.getIdToken().catch(()=>""):"";
-      const blobToPng=(blob:Blob)=>new Promise<string>((resolve,reject)=>{const url=URL.createObjectURL(blob);const image=new Image();image.onload=()=>{try{const canvas=document.createElement("canvas");canvas.width=480;canvas.height=640;const context=canvas.getContext("2d");if(!context)throw new Error("Canvas tidak tersedia");context.fillStyle="#f8fafc";context.fillRect(0,0,480,640);const scale=Math.max(480/image.naturalWidth,640/image.naturalHeight);const width=image.naturalWidth*scale,height=image.naturalHeight*scale;context.drawImage(image,(480-width)/2,(640-height)/2,width,height);resolve(canvas.toDataURL("image/png"));}catch(error){reject(error)}finally{URL.revokeObjectURL(url)}};image.onerror=()=>{URL.revokeObjectURL(url);reject(new Error("Foto tidak dapat dirender"))};image.src=url;});
-      const includePhoto=cardTemplate==="photo";
-      const photoImages=includePhoto?await Promise.all(pdfStudents.map(async(student)=>{const key=student.photoThumbnailKey??student.photoKey;if(!key||!token)return"";try{const response=await fetch(`/api/storage/file/${encodeURIComponent(key)}`,{headers:{Authorization:`Bearer ${token}`}});if(!response.ok)return"";return await blobToPng(await response.blob());}catch{return"";}})):pdfStudents.map(()=>"");
-      const single=layout==="single";
-      const cardsPerPage=layout==="a4-12"?12:layout==="a4-10"?10:8;
-      const pdf=new jsPDF({orientation:single?"landscape":orientation,unit:"mm",format:single?[85.6,54]:"a4",compress:true});
-      const pageWidth=single?85.6:(orientation==="landscape"?297:210),pageHeight=single?54:(orientation==="landscape"?210:297);
-      const cardWidth=85.6,cardHeight=54;
-      const columns=single?1:(orientation==="landscape"?3:2);
-      const rows=single?1:Math.ceil(cardsPerPage/columns);
-      const gapX=single?0:Math.max(3,(pageWidth-cardWidth*columns-16)/(columns-1||1));
-      const gapY=single?0:Math.max(3,(pageHeight-cardHeight*rows-18)/(rows-1||1));
-      pdfStudents.forEach((student,index)=>{
-        if(single&&index>0)pdf.addPage([85.6,54],"landscape");
-        if(!single&&index>0&&index%cardsPerPage===0)pdf.addPage("a4",orientation);
-        const pageIndex=single?0:index%cardsPerPage,col=single?0:pageIndex%columns,row=single?0:Math.floor(pageIndex/columns);
-        const pageStart=single?index:Math.floor(index/cardsPerPage)*cardsPerPage;
-        const cardsOnPage=single?1:Math.min(cardsPerPage,pdfStudents.length-pageStart);
-        const rowsOnPage=single?1:Math.ceil(cardsOnPage/columns);
-        const cardsOnRow=single?1:Math.min(columns,cardsOnPage-row*columns);
-        const rowStartX=single?0:(pageWidth-(cardWidth*cardsOnRow+gapX*(cardsOnRow-1)))/2;
-        const pageStartY=single?0:(pageHeight-(cardHeight*rowsOnPage+gapY*(rowsOnPage-1)))/2;
-        const x=rowStartX+col*(cardWidth+gapX),y=pageStartY+row*(cardHeight+gapY);
-        pdf.setFillColor(255,255,255);pdf.setDrawColor(125,211,252);pdf.setLineWidth(.3);pdf.rect(x,y,cardWidth,cardHeight,"FD");
-        pdf.setFillColor(125,211,252);pdf.roundedRect(x,y,cardWidth,13.5,4.25,4.25,"F");pdf.rect(x,y+8,cardWidth,5.5,"F");
-        pdf.setFillColor(186,230,253);pdf.ellipse(x+18,y+3,18,5,"F");pdf.setFillColor(56,189,248);pdf.ellipse(x+69,y+3,15,5,"F");
-        pdf.addImage(logoData,"PNG",x+4,y+2.5,8,8);
-        pdf.setTextColor(12,74,110);pdf.setFont("helvetica","bold");pdf.setFontSize(6.2);const schoolLine=String((pdf.splitTextToSize(schoolName.toUpperCase(),60) as string[])[0]??"");pdf.text(schoolLine,x+14,y+5.8);
-        pdf.setTextColor(3,105,161);pdf.setFontSize(4.2);pdf.text("SMART-ATT  ·  KARTU IDENTITAS SISWA",x+14,y+9.1);
-        if(includePhoto){pdf.setFillColor(240,249,255);pdf.setDrawColor(125,211,252);pdf.rect(x+4.5,y+16.5,23,32.5,"FD");if(photoImages[index])pdf.addImage(photoImages[index],"PNG",x+6,y+18,20,29.5);else{pdf.setTextColor(7,89,133);pdf.setFontSize(8);pdf.text(student.name.split(" ").slice(0,2).map((part)=>part[0]).join("").toUpperCase()||"ID",x+16,y+34,{align:"center"});}}
-        const textX=includePhoto?30:5.5,textWidth=includePhoto?31:54;
-        pdf.setTextColor(3,105,161);pdf.setFont("helvetica","bold");pdf.setFontSize(4.7);pdf.text("KARTU PELAJAR",x+textX,y+19);
-        pdf.setTextColor(15,23,42);pdf.setFontSize(includePhoto?8.2:10.5);const nameLines=(pdf.splitTextToSize(student.name,textWidth) as string[]).slice(0,2);pdf.text(nameLines,x+textX,y+24,{lineHeightFactor:1});
-        const detailY=nameLines.length>1?33:30.5;pdf.setFontSize(4.8);pdf.setTextColor(3,105,161);pdf.text("NIS",x+textX,y+detailY);pdf.setTextColor(15,23,42);pdf.text(student.nis,x+textX+9,y+detailY);
-        pdf.setTextColor(3,105,161);pdf.text("NISN",x+textX,y+detailY+4);pdf.setTextColor(15,23,42);pdf.text(student.nisn||"-",x+textX+9,y+detailY+4);
-        pdf.setTextColor(3,105,161);pdf.text("KELAS",x+textX,y+detailY+8);pdf.setTextColor(15,23,42);pdf.text(student.className,x+textX+9,y+detailY+8);
-        pdf.setFontSize(3.7);pdf.setTextColor(100,116,139);pdf.text("TAHUN AJARAN "+academicYear,x+textX,y+49);
-        pdf.setFillColor(255,255,255);pdf.setDrawColor(186,230,253);pdf.rect(x+64,y+21,17.5,27.5,"FD");pdf.addImage(qrImages[index],"PNG",x+65.5,y+25,14.5,14.5);pdf.setTextColor(7,89,133);pdf.setFontSize(3.5);pdf.text("SCAN ABSENSI",x+72.75,y+44,{align:"center"});
-      });
-      const suffix=single?`${pdfStudents[0].name}_${pdfStudents[0].nis}`.replace(/[^a-z0-9_-]+/gi,"_"):classFilter==="Semua kelas"?"semua-kelas":classFilter.toLowerCase().replace(/[^a-z0-9]+/g,"-");
-      pdf.save(single?`StudentID_${suffix}.pdf`:"student-id-smart-att-"+suffix+".pdf");setToast({message:single?"PDF Student ID satu halaman berhasil diunduh.":"PDF A4 Student ID berhasil diunduh.",tone:"success"});
-    }catch(error){setToast({message:error instanceof Error?error.message:"PDF gagal dibuat.",tone:"error"});}
-    finally{setPdfDownloading(false);}
   }
   return <>
 <SectionHeading eyebrow="Master Data" title="Data siswa" description="Kelola identitas, wali murid, foto, dan kartu QR siswa." action={<div className="flex flex-wrap gap-2">
 <button onClick={()=>{setGuardianLink("");setGuardianModal(true)}} className="flex items-center gap-2 rounded-xl border border-teal-200 bg-teal-50 px-4 py-2.5 text-xs font-extrabold text-teal-700">
 <MessageCircle size={16}/>Link data wali</button>
-<button disabled={!visible.length} onClick={()=>setQrBatch(true)} className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-extrabold text-slate-700 shadow-sm disabled:opacity-40">
-<Printer size={16}/>Cetak Student ID ({visible.length})</button>
+<button disabled={!visible.length} onClick={()=>{resetMobilePdfState();setQrBatch(true)}} className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-extrabold text-slate-700 shadow-sm disabled:opacity-40">
+{isMobilePdf?<FileDown size={16}/>:<Printer size={16}/>} {isMobilePdf?"Generate PDF":"Cetak Student ID"} ({visible.length})</button>
 <label title="Mendukung pemisah koma atau titik koma. Header wajib: NIS dan Nama Siswa." className="flex cursor-pointer items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-extrabold text-slate-700 shadow-sm">
 <Upload size={16}/>Import CSV<input type="file" accept=".csv,text/csv" className="hidden" onChange={importCsv}/>
 </label>
@@ -1521,7 +1604,7 @@ function StudentsView({ user, demo, students, configuredClasses, setStudents, se
     </div>
     <div className="mt-3 rounded-xl bg-slate-50 px-3 py-2.5"><p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Orang tua / wali</p><p className="mt-1 text-xs font-bold text-slate-700">{student.guardian||"Belum diisi"} <span className="font-normal text-slate-400">· {student.phone ? (whatsappHref(student.phone) ? <a href={whatsappHref(student.phone)} target="_blank" rel="noreferrer" className="font-black text-emerald-700 underline">WhatsApp</a> : "WhatsApp tidak valid") : "WhatsApp belum ada"}</span></p></div>
     <div className="mt-3 grid grid-cols-3 gap-2">
-      <button onClick={()=>setQrStudent(student)} className="flex min-h-11 items-center justify-center gap-1.5 rounded-xl bg-teal-50 text-xs font-extrabold text-teal-700"><QrCode size={16}/>QR</button>
+      <button onClick={()=>{resetMobilePdfState();setQrStudent(student)}} className="flex min-h-11 items-center justify-center gap-1.5 rounded-xl bg-teal-50 text-xs font-extrabold text-teal-700"><QrCode size={16}/>QR</button>
       <button onClick={()=>openEditStudent(student)} className="flex min-h-11 items-center justify-center gap-1.5 rounded-xl bg-sky-50 text-xs font-extrabold text-sky-700"><PencilLine size={16}/>Edit</button>
       <button onClick={()=>void removeStudent(student)} className="flex min-h-11 items-center justify-center gap-1.5 rounded-xl bg-rose-50 text-xs font-extrabold text-rose-700"><Trash2 size={16}/>Hapus</button>
     </div>
@@ -1571,7 +1654,7 @@ function StudentsView({ user, demo, students, configuredClasses, setStudents, se
 </td>
 <td className="px-5 py-4">
 <div className="flex justify-end gap-1">
-<button onClick={()=>setQrStudent(student)} title="Kartu QR" className="rounded-lg p-2 text-slate-400 hover:bg-teal-50 hover:text-teal-700">
+<button onClick={()=>{resetMobilePdfState();setQrStudent(student)}} title="Kartu QR" className="rounded-lg p-2 text-slate-400 hover:bg-teal-50 hover:text-teal-700">
 <QrCode size={17}/>
 </button>
 <button onClick={()=>openEditStudent(student)} title="Edit" className="rounded-lg p-2 text-slate-400 hover:bg-sky-50 hover:text-sky-700">
@@ -1658,26 +1741,33 @@ function StudentsView({ user, demo, students, configuredClasses, setStudents, se
 <Send size={16}/>Bagikan ke WhatsApp</a>
 </>:<button onClick={publishGuardianLink} disabled={publishingLink} className="flex w-full items-center justify-center gap-2 rounded-xl bg-teal-600 py-3 text-sm font-extrabold text-white disabled:opacity-60">{publishingLink?<Loader2 className="animate-spin" size={17}/>:<Link2 size={17}/>}Buat link kelas</button>}</div>
 </Modal>}
-  {qrStudent&&<Modal title="Print Preview Student ID" subtitle="Pilih template, layout kertas, dan orientasi sebelum export PDF." onClose={()=>setQrStudent(null)}>
+  {qrStudent&&<Modal title={isMobilePdf?"Generate PDF Student ID":"Print Preview Student ID"} subtitle={isMobilePdf?"PDF dibuat di server lalu link unduhan dikirim ke email akun guru.":"Pilih template, layout kertas, dan orientasi sebelum export PDF."} onClose={()=>{setQrStudent(null);resetMobilePdfState()}}>
     <PrintOptions cardTemplate={cardTemplate} setCardTemplate={setCardTemplate} printLayout={printLayout} setPrintLayout={setPrintLayout} printOrientation={printOrientation} setPrintOrientation={setPrintOrientation} selectedCount={1}/>
-    <div className="qr-print-root"><div className={`qr-print-page qr-print-${printLayout} qr-print-${printOrientation} rounded-2xl bg-slate-100 p-4`}><StudentQrCard student={qrStudent} schoolName={schoolName} academicYear={academicYear} user={user} template={cardTemplate}/></div></div>
-    <div className="mt-4 rounded-xl bg-teal-50 px-4 py-3 text-xs leading-5 text-teal-800">Pratinjau ukuran cetak. PDF satu siswa dibuat tepat 1 halaman dengan nama file StudentID_[Nama]_[NIS].pdf.</div>
-    <div className="mt-4 grid gap-2 sm:grid-cols-2"><button disabled={pdfDownloading} onClick={()=>void downloadQrPdf([qrStudent],"single",printOrientation)} className="flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-3 text-sm font-extrabold text-white disabled:opacity-60">{pdfDownloading?<Loader2 className="animate-spin" size={17}/>:<Download size={17}/>}Download PDF</button><button onClick={printQrCards} className="flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-extrabold text-white"><Printer size={17}/>Print Selected</button></div>
+    {isMobilePdf?<div className="overflow-x-auto rounded-2xl bg-slate-100 p-4"><StudentQrCard student={qrStudent} schoolName={schoolName} academicYear={academicYear} user={user} schoolLogoKey={schoolLogoKey} template={cardTemplate}/></div>:<div className="qr-print-root"><div className={`qr-print-page qr-print-${printLayout} qr-print-${printOrientation} rounded-2xl bg-slate-100 p-4`}><StudentQrCard student={qrStudent} schoolName={schoolName} academicYear={academicYear} user={user} schoolLogoKey={schoolLogoKey} template={cardTemplate}/></div></div>}
+    <div className="mt-4 rounded-xl bg-teal-50 px-4 py-3 text-xs leading-5 text-teal-800">{isMobilePdf?<>Foto, logo, QR Code, dan data siswa akan di-embed di server. Link PDF dikirim ke <strong>{user?.email||"email akun guru"}</strong>.</>:<>Pratinjau sudah memakai ukuran dan desain kartu. Tekan Print untuk mencetak atau memilih Save as PDF.</>}</div>
+    {isMobilePdf&&<MobilePdfProgress progress={mobilePdfProgress} message={mobilePdfMessage} error={mobilePdfError} generating={mobilePdfGenerating} email={mobilePdfEmail} downloadUrl={mobilePdfDownloadUrl}/>}
+    <div className="mt-4">{isMobilePdf?<button disabled={mobilePdfGenerating||!user||demo} onClick={()=>void generateMobilePdf([qrStudent])} className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-extrabold text-white disabled:cursor-not-allowed disabled:opacity-40">{mobilePdfGenerating?<Loader2 className="animate-spin" size={17}/>:<FileDown size={17}/>} {mobilePdfError?"Coba Lagi":"Generate PDF"}</button>:<button onClick={printQrCards} className="flex w-full items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-extrabold text-white"><Printer size={17}/> Print Kartu</button>}</div>
   </Modal>}
-  {qrBatch&&<Modal title="Print Preview Student ID" subtitle={`${visible.length} siswa - ${Math.ceil(visible.length/(printLayout==="a4-12"?12:printLayout==="a4-10"?10:8))} halaman.`} onClose={()=>setQrBatch(false)}>
+  {qrBatch&&<Modal title={isMobilePdf?"Generate PDF Student ID":"Print Preview Student ID"} subtitle={`${visible.length} siswa - ${Math.ceil(visible.length/(printLayout==="a4-12"?12:printLayout==="a4-10"?10:8))} halaman.`} onClose={()=>{setQrBatch(false);resetMobilePdfState()}}>
     <PrintOptions cardTemplate={cardTemplate} setCardTemplate={setCardTemplate} printLayout={printLayout} setPrintLayout={setPrintLayout} printOrientation={printOrientation} setPrintOrientation={setPrintOrientation} selectedCount={visible.length}/>
-    <div className="mb-4 rounded-xl bg-sky-50 px-4 py-3 text-xs leading-5 text-sky-800">Daftar mengikuti pencarian dan filter kelas yang sedang aktif. Pilih ukuran kertas <strong>A4</strong>, skala 100%, dan margin tidak ada pada dialog printer.</div>
-      <div className="qr-print-root max-h-[55vh] space-y-4 overflow-y-auto rounded-2xl bg-slate-100 p-4">
+    <div className="mb-4 rounded-xl bg-sky-50 px-4 py-3 text-xs leading-5 text-sky-800">{isMobilePdf?<>Mode HP tidak memakai Android/iOS Print Service. PDF dibuat di server dan link unduhan dikirim ke <strong>{user?.email||"email akun guru"}</strong>.</>:<>Daftar mengikuti pencarian dan filter kelas yang sedang aktif. Tekan Print, lalu pilih printer atau <strong>Save as PDF</strong>. Aktifkan <strong>Background graphics</strong> agar warna desain ikut tersimpan.</>}</div>
+    {isMobilePdf?<div className="overflow-x-auto rounded-2xl bg-slate-100 p-4"><StudentQrCard student={visible[0]} schoolName={schoolName} academicYear={academicYear} user={user} schoolLogoKey={schoolLogoKey} template={cardTemplate}/>{visible.length>1&&<p className="mt-3 text-center text-xs font-bold text-slate-500">Pratinjau kartu pertama · {visible.length-1} kartu lainnya dibuat di server</p>}</div>:<div className="qr-print-root max-h-[55vh] space-y-4 overflow-y-auto rounded-2xl bg-slate-100 p-4">
       {Array.from({length:Math.ceil(visible.length/(printLayout==="a4-12"?12:printLayout==="a4-10"?10:8))},(_,pageIndex)=>{const perPage=printLayout==="a4-12"?12:printLayout==="a4-10"?10:8;return <section key={pageIndex} className={`qr-print-page qr-print-${printLayout} qr-print-${printOrientation} grid gap-3 rounded-xl border border-dashed border-slate-300 bg-white p-3`}>
-        {visible.slice(pageIndex*perPage,pageIndex*perPage+perPage).map((student)=><StudentQrCard key={student.id} student={student} schoolName={schoolName} academicYear={academicYear} user={user} template={cardTemplate}/>)}</section>})}
-    </div>
+        {visible.slice(pageIndex*perPage,pageIndex*perPage+perPage).map((student)=><StudentQrCard key={student.id} student={student} schoolName={schoolName} academicYear={academicYear} user={user} schoolLogoKey={schoolLogoKey} template={cardTemplate}/>)}</section>})}
+    </div>}
+    {isMobilePdf&&<MobilePdfProgress progress={mobilePdfProgress} message={mobilePdfMessage} error={mobilePdfError} generating={mobilePdfGenerating} email={mobilePdfEmail} downloadUrl={mobilePdfDownloadUrl}/>}
     <div className="mt-4 grid gap-2 sm:grid-cols-2">
-      <button disabled={pdfDownloading} onClick={()=>void downloadQrPdf(visible,printLayout,printOrientation)} className="flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-3 text-sm font-extrabold text-white disabled:opacity-60">{pdfDownloading?<Loader2 className="animate-spin" size={17}/>:<Download size={17}/>}Download PDF</button>
-      <button onClick={printQrCards} className="flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-extrabold text-white"><Printer size={17}/>Print All</button>
+      {isMobilePdf?<button disabled={mobilePdfGenerating||!user||demo||!visible.length} onClick={()=>void generateMobilePdf(printStudents)} className="flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-extrabold text-white disabled:cursor-not-allowed disabled:opacity-40 sm:col-span-2">{mobilePdfGenerating?<Loader2 className="animate-spin" size={17}/>:<FileDown size={17}/>} {mobilePdfError?"Coba Lagi":`Generate PDF (${visible.length} Kartu)`}</button>:<button onClick={printQrCards} className="flex items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-extrabold text-white sm:col-span-2"><Printer size={17}/> Print Semua Kartu</button>}
     </div>
   </Modal>}</>;
 }
 function Modal({title,subtitle,onClose,children}:{title:string;subtitle:string;onClose:()=>void;children:React.ReactNode}) { return <div role="dialog" aria-modal="true" aria-label={title} className="fixed inset-0 z-[80] flex items-end bg-slate-950/45 backdrop-blur-sm sm:grid sm:place-items-center sm:p-4"><div className="mobile-modal-panel max-h-[94dvh] w-full max-w-xl overflow-y-auto rounded-t-3xl bg-white p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] shadow-2xl sm:max-h-[92vh] sm:rounded-3xl sm:p-6"><div className="mb-5 flex items-start justify-between gap-4 sm:mb-6"><div className="min-w-0"><h3 className="text-lg font-black sm:text-xl">{title}</h3><p className="mt-1 text-xs leading-5 text-slate-400">{subtitle}</p></div><button onClick={onClose} aria-label="Tutup" className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-slate-100 text-slate-500"><X size={18}/></button></div>{children}</div></div> }
+
+function MobilePdfProgress({progress,message,error,generating,email,downloadUrl}:{progress:number;message:string;error:string;generating:boolean;email:string;downloadUrl?:string}){
+  if(!generating&&!message&&!error&&!email)return null;
+  const complete=!generating&&!error&&progress>=100;
+  return <div className={`mt-4 rounded-2xl border p-4 ${error?"border-rose-200 bg-rose-50":complete?"border-emerald-200 bg-emerald-50":"border-teal-200 bg-teal-50"}`}><div className="flex items-start gap-3">{generating?<Loader2 className="mt-0.5 shrink-0 animate-spin text-teal-600" size={20}/>:error?<XCircle className="mt-0.5 shrink-0 text-rose-600" size={20}/>:<CheckCircle2 className="mt-0.5 shrink-0 text-emerald-600" size={20}/>}<div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-3"><p className={`text-sm font-black ${error?"text-rose-900":complete?"text-emerald-900":"text-teal-900"}`}>{error||message}</p>{!error&&<span className="shrink-0 text-xs font-black text-teal-700">{progress}%</span>}</div>{email&&<p className="mt-1 break-all text-xs leading-5 text-emerald-700">Link unduhan dikirim ke <strong>{email}</strong> (cek Inbox & Spam).</p>}{complete&&downloadUrl&&<div className="mt-3"><a href={downloadUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-extrabold text-white shadow-sm hover:bg-emerald-700"><Download size={15}/>Unduh PDF Kartu Pelajar Langsung</a></div>}{!error&&<div className="mt-3 h-2 overflow-hidden rounded-full bg-white"><div className={`h-full rounded-full transition-all ${complete?"bg-emerald-600":"bg-teal-600"}`} style={{width:`${progress}%`}}/></div>}</div></div></div>;
+}
 
 function PrintOptions({ cardTemplate, setCardTemplate, printLayout, setPrintLayout, printOrientation, setPrintOrientation, selectedCount }: { cardTemplate: "photo" | "no-photo"; setCardTemplate: (value: "photo" | "no-photo") => void; printLayout: "single" | "a4-8" | "a4-10" | "a4-12"; setPrintLayout: (value: "single" | "a4-8" | "a4-10" | "a4-12") => void; printOrientation: "portrait" | "landscape"; setPrintOrientation: (value: "portrait" | "landscape") => void; selectedCount: number }) {
   const cardsPerPage = printLayout === "single" ? 1 : printLayout === "a4-12" ? 12 : printLayout === "a4-10" ? 10 : 8;
@@ -1691,6 +1781,93 @@ function PrintOptions({ cardTemplate, setCardTemplate, printLayout, setPrintLayo
 
 function rupiah(value:number){return new Intl.NumberFormat("id-ID",{style:"currency",currency:"IDR",maximumFractionDigits:0}).format(value||0)}
 function todayKey(){const date=new Date();return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`}
+
+function SavingsShareManager({user,demo,students,setToast}:{user:User|null;demo:boolean;students:Student[];setToast:(toast:Toast)=>void}) {
+  const [transactions,setTransactions]=useState<SavingsTransaction[]>([]);
+  const [shareId,setShareId]=useState("");
+  const [schoolName,setSchoolName]=useState(demo?"SMP Harapan Bangsa":"Sekolah");
+  const [open,setOpen]=useState(false);
+  const [busy,setBusy]=useState(false);
+  const [resetStudentId,setResetStudentId]=useState("");
+
+  useEffect(()=>{
+    if(demo||!user)return;
+    return onSnapshot(query(collection(db,"savingsTransactions"),where("ownerUid","==",user.uid)),(snapshot)=>{
+      setTransactions(snapshot.docs.map((item)=>({id:item.id,...item.data()} as SavingsTransaction)));
+    });
+  },[demo,user]);
+
+  useEffect(()=>{
+    if(demo||!user)return;
+    void Promise.all([getDoc(doc(db,"users",user.uid)),getDoc(doc(db,"users",user.uid,"settings","savingsShare"))]).then(([profile,settings])=>{
+      const savedSchool=profile.data()?.schoolName;
+      if(typeof savedSchool==="string"&&savedSchool.trim())setSchoolName(savedSchool.trim());
+      const savedShare=settings.data()?.shareId;
+      if(typeof savedShare==="string")setShareId(savedShare);
+    }).catch(()=>undefined);
+  },[demo,user]);
+
+  const syncShare=useCallback(async(id:string) => {
+    if(demo||!user)return;
+    const token=await user.getIdToken();
+    const response=await fetch("/api/storage/savings-share",{
+      method:"POST",
+      headers:{Authorization:`Bearer ${token}`,"Content-Type":"application/json"},
+      body:JSON.stringify({
+        shareId:id,
+        schoolName,
+        students:students.map(({id:studentId,nis,nisn,name,className})=>({id:studentId,nis,nisn:nisn??"",name,className})),
+        transactions:transactions.map(({id:transactionId,studentId,type,amount,transactionDate,note,officerName,status,createdAtMs})=>({id:transactionId,studentId,type,amount,transactionDate,note,officerName,status,createdAtMs})),
+      }),
+    });
+    const body=await response.json().catch(()=>({})) as {error?:string};
+    if(!response.ok)throw new Error(body.error||"Link belum dapat diperbarui");
+  },[demo,user,schoolName,students,transactions]);
+
+  useEffect(()=>{
+    if(demo||!user||!shareId)return;
+    const timer=setTimeout(()=>void syncShare(shareId).catch(()=>undefined),900);
+    return()=>clearTimeout(timer);
+  },[demo,user,shareId,syncShare]);
+
+  async function publish() {
+    if(demo){setShareId("demo-tabungan-siswa");setOpen(true);return;}
+    if(!user)return;
+    setBusy(true);
+    try{
+      const id=shareId||`tabungan-${crypto.randomUUID().replaceAll("-","").slice(0,24)}`;
+      await syncShare(id);
+      await setDoc(doc(db,"users",user.uid,"settings","savingsShare"),{shareId:id,published:true,updatedAt:serverTimestamp()},{merge:true});
+      setShareId(id);setOpen(true);
+      setToast({message:"Link Tabungan Siswa siap dibagikan.",tone:"success"});
+    }catch(reason){setToast({message:reason instanceof Error?reason.message:"Link belum dapat dibuat.",tone:"error"});}
+    finally{setBusy(false);}
+  }
+
+  async function resetPassword() {
+    if(!resetStudentId||demo||!user)return;
+    const student=students.find((item)=>item.id===resetStudentId);
+    if(!confirm(`Reset password tabungan ${student?.name??"siswa"}? Sesi login lama akan langsung tidak berlaku.`))return;
+    setBusy(true);
+    try{
+      const token=await user.getIdToken();
+      const response=await fetch("/api/storage/savings-password-reset",{method:"POST",headers:{Authorization:`Bearer ${token}`,"Content-Type":"application/json"},body:JSON.stringify({studentId:resetStudentId})});
+      const body=await response.json().catch(()=>({})) as {error?:string};
+      if(!response.ok)throw new Error(body.error||"Reset password gagal");
+      setToast({message:`Password ${student?.name??"siswa"} berhasil di-reset.`,tone:"success"});setResetStudentId("");
+    }catch(reason){setToast({message:reason instanceof Error?reason.message:"Reset password gagal.",tone:"error"});}
+    finally{setBusy(false);}
+  }
+
+  const publicLink=typeof window==="undefined"?"":`${window.location.origin}/public/savings?share=${shareId}`;
+  return <>
+    <section className="mb-5 flex flex-col gap-4 rounded-2xl border border-teal-200 bg-gradient-to-r from-teal-50 to-sky-50 p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex items-center gap-3"><div className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-teal-600 text-white"><Link2 size={19}/></div><div><p className="text-sm font-black">Link Tabungan Siswa</p><p className="mt-1 text-[11px] leading-4 text-slate-500">Orang tua melihat saldo dan transaksi melalui login NIS yang aman.</p></div></div>
+      <button disabled={busy} onClick={()=>void publish()} className="flex h-11 items-center justify-center gap-2 rounded-xl bg-slate-950 px-4 text-xs font-black text-white disabled:opacity-50">{busy?<Loader2 className="animate-spin" size={16}/>:<Link2 size={16}/>} {shareId?"Kelola link":"Buat link"}</button>
+    </section>
+    {open&&<div className="fixed inset-0 z-[80] grid place-items-end bg-slate-950/45 sm:place-items-center sm:p-5"><section className="w-full max-w-lg rounded-t-3xl bg-white p-6 shadow-2xl sm:rounded-3xl"><div className="flex items-start justify-between gap-4"><div><p className="text-[10px] font-black uppercase tracking-wider text-teal-600">Akses orang tua / siswa</p><h3 className="mt-1 text-xl font-black">Link Tabungan Siswa</h3><p className="mt-2 text-xs leading-5 text-slate-500">Pengguna masuk dengan NIS, lalu membuat password sendiri pada akses pertama.</p></div><button onClick={()=>setOpen(false)} className="rounded-xl bg-slate-100 p-2 text-slate-500"><X size={17}/></button></div><div className="mt-5 flex gap-2"><input readOnly value={publicLink} className="h-11 min-w-0 flex-1 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs"/><button onClick={()=>void navigator.clipboard.writeText(publicLink).then(()=>setToast({message:"Link disalin.",tone:"success"}))} className="rounded-xl bg-slate-950 px-4 text-white"><Copy size={16}/></button></div><a target="_blank" rel="noreferrer" href={`https://wa.me/?text=${encodeURIComponent(`Cek Tabungan Siswa SMART-ATT: ${publicLink}`)}`} className="mt-3 flex h-11 items-center justify-center gap-2 rounded-xl bg-emerald-600 text-xs font-black text-white"><MessageCircle size={16}/>Bagikan lewat WhatsApp</a><div className="mt-6 border-t border-slate-100 pt-5"><p className="text-xs font-black">Reset password siswa</p><p className="mt-1 text-[10px] leading-4 text-slate-400">Guru tidak dapat melihat password. Reset membuat pengguna harus membuat password baru.</p><div className="mt-3 flex gap-2"><select value={resetStudentId} onChange={(event)=>setResetStudentId(event.target.value)} className="h-11 min-w-0 flex-1 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold"><option value="">Pilih siswa</option>{students.map((student)=><option key={student.id} value={student.id}>{student.name} · {student.nis}</option>)}</select><button disabled={!resetStudentId||busy||demo} onClick={()=>void resetPassword()} className="rounded-xl border border-rose-200 px-4 text-xs font-black text-rose-700 disabled:opacity-40">Reset</button></div></div></section></div>}
+  </>;
+}
 
 function SavingsView({user,demo,students,setToast}:{user:User|null;demo:boolean;students:Student[];setToast:(toast:Toast)=>void}){
   const [transactions,setTransactions]=useState<SavingsTransaction[]>(demo?[{id:"demo-save-1",ownerUid:"demo",studentId:demoStudents[0].id,studentName:demoStudents[0].name,nis:demoStudents[0].nis,nisn:demoStudents[0].nisn,className:demoStudents[0].className,type:"deposit",amount:75000,transactionDate:todayKey(),note:"Setoran awal",officerName:"Admin Demo",status:"active",createdAtMs:Date.now()-3600000},{id:"demo-save-2",ownerUid:"demo",studentId:demoStudents[1].id,studentName:demoStudents[1].name,nis:demoStudents[1].nis,nisn:demoStudents[1].nisn,className:demoStudents[1].className,type:"withdrawal",amount:15000,transactionDate:todayKey(),note:"Ambil uang kegiatan",officerName:"Admin Demo",status:"active",createdAtMs:Date.now()-1800000}]:[]);
@@ -1817,7 +1994,7 @@ function ScannerView({user,demo,students,setToast}:{user:User|null;demo:boolean;
   useEffect(()=>{
     if(demo||!user)return;
     return onSnapshot(collection(db,"users",user.uid,"attendanceSessions"),(snapshot)=>{
-      const sessions=snapshot.docs.map((item)=>({id:item.id,...item.data(),records:item.data().records??{}} as AbsensiSession)).sort((a,b)=>b.startedAtMs-a.startedAtMs);
+      const sessions=snapshot.docs.filter((item)=>item.data().deleted!==true).map((item)=>({id:item.id,...item.data(),records:item.data().records??{}} as AbsensiSession)).sort((a,b)=>b.startedAtMs-a.startedAtMs);
       const latest=sessions.find((item)=>item.status==="open")??sessions[0]??null;
       setSession(latest);
       if(latest?.className)setSelectedClass(latest.className);
@@ -2123,12 +2300,13 @@ function TasksView({ user, demo, students, activeSession, setToast }: { user: Us
   </>;
 }
 
-function ExamsViewWithManual({user,demo,students,setToast}:{user:User|null;demo:boolean;students:Student[];setToast:(t:Toast)=>void}){
-  const [manualOpen,setManualOpen]=useState(false);
-  return <><div className="mb-4 flex justify-end"><button onClick={()=>setManualOpen(true)} className="flex items-center gap-2 rounded-xl bg-teal-600 px-4 py-3 text-xs font-extrabold text-white shadow-lg shadow-teal-600/15"><PencilLine size={16}/>Buat soal manual</button></div><ExamsViewAdvanced user={user} demo={demo} students={students} setToast={setToast}/>{manualOpen&&<ManualExamModal user={user} demo={demo} students={students} setToast={setToast} onClose={()=>setManualOpen(false)}/>}</>;
+export function ExamsViewWithManual({user,demo,students,setToast,scope,allowedClassNames,allowedSubjectNames}:{user:User|null;demo:boolean;students:Student[];setToast:(t:Toast)=>void;scope?:WorkspaceScope;allowedClassNames?:string[];allowedSubjectNames?:string[]}){
+  const [manualOpen,setManualOpen]=useState(false); const [aiOpen,setAiOpen]=useState(false);
+  return <><div className="mb-4 flex flex-wrap justify-end gap-2"><button onClick={()=>setAiOpen((value)=>!value)} className="flex items-center gap-2 rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-xs font-extrabold text-violet-700"><Sparkles size={16}/>{aiOpen?"Tutup Generator AI":"Buat soal dengan AI"}</button><button onClick={()=>setManualOpen(true)} className="flex items-center gap-2 rounded-xl bg-teal-600 px-4 py-3 text-xs font-extrabold text-white shadow-lg shadow-teal-600/15"><PencilLine size={16}/>Buat soal manual</button></div>{aiOpen&&<section className="mb-6 rounded-2xl border border-violet-200 bg-violet-50/40 p-3"><AiGenerator user={user} demo={demo} setToast={setToast} scope={scope} allowedClassNames={allowedClassNames} allowedSubjectNames={allowedSubjectNames}/></section>}<ExamsViewAdvanced user={user} demo={demo} students={students} setToast={setToast} scope={scope} allowedClassNames={allowedClassNames}/>{manualOpen&&<ManualExamModal user={user} demo={demo} students={students} setToast={setToast} scope={scope} onClose={()=>setManualOpen(false)}/>}</>;
 }
 
-function ManualExamModal({user,demo,students,setToast,onClose}:{user:User|null;demo:boolean;students:Student[];setToast:(t:Toast)=>void;onClose:()=>void}){
+function ManualExamModal({user,demo,students,setToast,scope,onClose}:{user:User|null;demo:boolean;students:Student[];setToast:(t:Toast)=>void;scope?:WorkspaceScope;onClose:()=>void}){
+  const dataScope:WorkspaceScope|null=scope??(user?{root:"users",id:user.uid}:null);
   const classes=useMemo(()=>Array.from(new Set(students.map((student)=>student.className).filter(Boolean))).sort(),[students]);
   const emptyQuestion=():QuizQuestion=>({question:"",choices:["","","",""],answerIndex:0,explanation:""});
   const [title,setTitle]=useState("");
@@ -2160,7 +2338,7 @@ function ManualExamModal({user,demo,students,setToast,onClose}:{user:User|null;d
     if(!questions.length){setToast({message:"Tambahkan minimal satu butir soal.",tone:"error"});return;}
     setSaving(true);
     try{
-      if(!demo&&user)await addDoc(collection(db,"users",user.uid,"exams"),{title:title.trim(),subject:subject.trim(),className:className.trim(),chapter:chapter.trim(),durationMinutes:Math.max(1,Math.min(300,Number(duration)||60)),questions,status:"draft",source:"manual",createdAt:serverTimestamp(),updatedAt:serverTimestamp()});
+      if(!demo&&user&&dataScope)await addDoc(workspaceCollection(dataScope,"exams"),{title:title.trim(),subject:subject.trim(),className:className.trim(),chapter:chapter.trim(),durationMinutes:Math.max(1,Math.min(300,Number(duration)||60)),questions,status:"draft",source:"manual",createdByUid:user.uid,createdAt:serverTimestamp(),updatedAt:serverTimestamp()});
       else if(!demo)throw new Error("Sesi login tidak tersedia");
       setToast({message:`Draf manual dengan ${questions.length} soal berhasil disimpan.`,tone:"success"});onClose();
     }catch{setToast({message:"Draf soal manual gagal disimpan.",tone:"error"});}
@@ -2170,7 +2348,8 @@ function ManualExamModal({user,demo,students,setToast,onClose}:{user:User|null;d
   return <Modal title="Buat soal manual" subtitle="Tambahkan soal satu per satu, tentukan kunci, lalu simpan sebagai draf." onClose={onClose}><div className="space-y-4"><div className="grid gap-4 sm:grid-cols-2"><Field label="Judul ulangan" value={title} onChange={setTitle} placeholder="Contoh: Ulangan Harian Bab 1" required/><Field label="Mata pelajaran" value={subject} onChange={setSubject} placeholder="Matematika" required/></div><div className="grid gap-4 sm:grid-cols-3"><label className="block"><span className="mb-2 block text-xs font-extrabold text-slate-700">Kelas</span>{classes.length?<select value={className} onChange={(event)=>setClassName(event.target.value)} className="h-12 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-teal-500">{classes.map((item)=><option key={item}>{item}</option>)}</select>:<input value={className} onChange={(event)=>setClassName(event.target.value)} placeholder="V-A" className="h-12 w-full rounded-xl border border-slate-200 px-3 text-sm outline-none focus:border-teal-500"/>}</label><Field label="Bab / materi" value={chapter} onChange={setChapter} placeholder="Materi ujian"/><Field label="Durasi (menit)" type="number" value={duration} onChange={setDuration}/></div><div className="my-5 border-t border-slate-100"/><div className="rounded-2xl bg-slate-50 p-4"><div className="mb-4 flex items-center justify-between"><div><h4 className="text-sm font-black">{editingIndex===null?`Soal ${questions.length+1}`:`Edit soal ${editingIndex+1}`}</h4><p className="mt-1 text-[10px] text-slate-400">Pilih satu jawaban yang benar.</p></div>{editingIndex!==null&&<button onClick={()=>{setDraft(emptyQuestion());setEditingIndex(null)}} className="text-xs font-bold text-slate-500">Batal edit</button>}</div><label className="block"><span className="mb-2 block text-xs font-extrabold">Pertanyaan</span><textarea value={draft.question} onChange={(event)=>setDraft((current)=>({...current,question:event.target.value}))} className="min-h-24 w-full rounded-xl border border-slate-200 bg-white p-3 text-sm outline-none focus:border-teal-500" placeholder="Tuliskan pertanyaan..."/></label><div className="mt-4 grid gap-3 sm:grid-cols-2">{draft.choices.map((choice,index)=><label key={index} className={`flex items-center gap-2 rounded-xl border p-2 ${draft.answerIndex===index?'border-emerald-300 bg-emerald-50':'border-slate-200 bg-white'}`}><input type="radio" name="correct-answer" checked={draft.answerIndex===index} onChange={()=>setDraft((current)=>({...current,answerIndex:index}))} className="accent-emerald-600"/><span className="text-xs font-black text-slate-500">{String.fromCharCode(65+index)}</span><input value={choice} onChange={(event)=>updateChoice(index,event.target.value)} placeholder={`Pilihan ${String.fromCharCode(65+index)}`} className="h-9 min-w-0 flex-1 bg-transparent text-xs outline-none"/></label>)}</div><label className="mt-4 block"><span className="mb-2 block text-xs font-extrabold">Pembahasan (opsional)</span><textarea value={draft.explanation} onChange={(event)=>setDraft((current)=>({...current,explanation:event.target.value}))} className="min-h-20 w-full rounded-xl border border-slate-200 bg-white p-3 text-sm outline-none focus:border-teal-500" placeholder="Jelaskan alasan jawaban yang benar..."/></label><button type="button" onClick={saveQuestion} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-slate-950 py-3 text-xs font-extrabold text-white"><Plus size={15}/>{editingIndex===null?'Tambahkan soal':'Simpan perubahan soal'}</button></div>{questions.length>0&&<div><h4 className="mb-3 text-sm font-black">Daftar soal · {questions.length} butir</h4><div className="max-h-56 space-y-2 overflow-y-auto pr-1">{questions.map((question,index)=><div key={`${index}-${question.question}`} className="flex items-start gap-3 rounded-xl border border-slate-200 p-3"><span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-teal-50 text-xs font-black text-teal-700">{index+1}</span><div className="min-w-0 flex-1"><p className="line-clamp-2 text-xs font-bold leading-5">{question.question}</p><p className="mt-1 text-[10px] text-emerald-600">Kunci {String.fromCharCode(65+question.answerIndex)} · {question.choices[question.answerIndex]}</p></div><button onClick={()=>editQuestion(index)} className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"><PencilLine size={14}/></button><button onClick={()=>removeQuestion(index)} className="rounded-lg p-2 text-rose-500 hover:bg-rose-50"><Trash2 size={14}/></button></div>)}</div></div>}<div className="flex gap-3 border-t border-slate-100 pt-4"><button disabled={saving} onClick={onClose} className="flex-1 rounded-xl border border-slate-200 py-3 text-xs font-extrabold text-slate-600">Batal</button><button disabled={saving||!questions.length} onClick={()=>void saveExam()} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-teal-600 py-3 text-xs font-extrabold text-white disabled:opacity-40">{saving?<Loader2 className="animate-spin" size={16}/>:<CheckCircle2 size={16}/>}Simpan sebagai draf</button></div></div></Modal>;
 }
 
-function ExamsViewAdvanced({user,demo,students,setToast}:{user:User|null;demo:boolean;students:Student[];setToast:(t:Toast)=>void}){
+function ExamsViewAdvanced({user,demo,students,setToast,scope,allowedClassNames}:{user:User|null;demo:boolean;students:Student[];setToast:(t:Toast)=>void;scope?:WorkspaceScope;allowedClassNames?:string[]}){
+  const dataScope:WorkspaceScope|null=scope??(user?{root:"users",id:user.uid}:null);
   const sampleExam:ExamRecord={id:"demo-exam",title:"Kuis Matematika — Persamaan Linear",subject:"Matematika",className:"V-A",chapter:"Persamaan linear",status:"draft",source:"ai",durationMinutes:60,questions:[{question:"Nilai x yang memenuhi 3x + 5 = 20 adalah...",choices:["3","5","7","15"],answerIndex:1,explanation:"3x = 15, sehingga x = 5."}]};
   const [exams,setExams]=useState<ExamRecord[]>(demo?[sampleExam]:[]);
   const [attempts,setAttempts]=useState<QuizAttempt[]>([]);
@@ -2185,18 +2364,24 @@ const [durationMinutes,setDurationMinutes]=useState("60");
 
   useEffect(()=>{
     if(demo){setExams([sampleExam]);setLoading(false);return;}
-    if(!user){setExams([]);setLoading(false);return;}
+    if(!user||!dataScope){setExams([]);setLoading(false);return;}
     setLoading(true);
-    return onSnapshot(collection(db,"users",user.uid,"exams"),(snapshot)=>{
-      const next=snapshot.docs.map((item)=>({id:item.id,...item.data()} as ExamRecord));
+    const applyDocuments=(documents:QueryDocumentSnapshot<DocumentData>[])=>{
+      const next=documents.map((item)=>({id:item.id,...item.data()} as ExamRecord));
       next.sort((a,b)=>(b.createdAt?.toMillis?.()??0)-(a.createdAt?.toMillis?.()??0));
       setExams(next);setLoading(false);
-    },()=>{setLoading(false);setToast({message:"Data ulangan belum dapat dibaca.",tone:"error"});});
-  },[user,demo,setToast]);
+    };
+    const fail=()=>{setLoading(false);setToast({message:"Data ulangan belum dapat dibaca.",tone:"error"});};
+    if(dataScope.root!=="schools"||!allowedClassNames)return onSnapshot(workspaceCollection(dataScope,"exams"),(snapshot)=>applyDocuments(snapshot.docs),fail);
+    if(!allowedClassNames.length){applyDocuments([]);return;}
+    const groups=new Map<string,QueryDocumentSnapshot<DocumentData>[]>();
+    const stops=allowedClassNames.map((className)=>onSnapshot(query(workspaceCollection(dataScope,"exams"),where("className","==",className)),(snapshot)=>{groups.set(className,snapshot.docs);applyDocuments(Array.from(groups.values()).flat())},fail));
+    return()=>stops.forEach((stop)=>stop());
+  },[user,demo,setToast,dataScope?.root,dataScope?.id,allowedClassNames?.join("\u0001")]);
 
   useEffect(()=>{
     if(demo||!user){setAttempts([]);return;}
-    const attemptsQuery=query(collection(db,"publicQuizAttempts"),where("ownerUid","==",user.uid));
+    const attemptsQuery=query(collection(db,"publicQuizAttempts"),where(dataScope?.root==="schools"&&!allowedClassNames?"schoolId":"ownerUid","==",dataScope?.root==="schools"&&!allowedClassNames?dataScope.id:user.uid));
     return onSnapshot(attemptsQuery,(snapshot)=>{
       const next=snapshot.docs.map((item)=>({id:item.id,...item.data()} as QuizAttempt));
       const hadPrevious=Object.keys(reloginSeenRef.current).length>0;
@@ -2207,12 +2392,48 @@ const [durationMinutes,setDurationMinutes]=useState("60");
       reloginSeenRef.current=Object.fromEntries(next.map((attempt)=>[attempt.id,attempt.reloginCount??0]));
       setAttempts(next);
     },()=>setToast({message:"Monitoring ujian belum dapat dibaca.",tone:"error"}));
-  },[user,demo,setToast]);
+  },[user,demo,setToast,dataScope?.root,dataScope?.id]);
 
   function targetStudents(exam:ExamRecord){
-    if(exam.status!=="published")return students;
+    if(exam.status!=="published"&&exam.status!=="finished")return students.filter((student)=>student.className===exam.className);
     const participantIds=new Set(attempts.filter((attempt)=>attempt.examId===exam.id).map((attempt)=>attempt.studentId));
     return students.filter((student)=>participantIds.has(student.id));
+  }
+
+  async function existingQuizAccessCode(exam:ExamRecord){
+    const fromExam=normalizeQuizAccessCode(exam.accessCode);
+    if(fromExam)return fromExam;
+    if(!exam.snapshotId)return "";
+    try{
+      const snapshot=await getDoc(doc(db,"publicSnapshots",exam.snapshotId));
+      return normalizeQuizAccessCode(snapshot.data()?.accessCode);
+    }catch{return "";}
+  }
+
+  async function ensureQuizAccessCode(exam:ExamRecord){
+    if(demo)return "DEMO";
+    if(!user||!dataScope||!exam.snapshotId)throw new Error("quiz-snapshot-unavailable");
+    const snapshotRef=doc(db,"publicSnapshots",exam.snapshotId);
+    let preferred=await existingQuizAccessCode(exam);
+    for(let attempt=0;attempt<8;attempt+=1){
+      const candidate=preferred||generateQuizAccessCode();
+      const codeRef=doc(db,"publicLinkCodes",candidate);
+      try{
+        await runTransaction(db,async(transaction)=>{
+          const codeDocument=await transaction.get(codeRef);
+          if(codeDocument.exists()&&codeDocument.data().snapshotId!==snapshotRef.id)throw new Error("quiz-access-code-collision");
+          transaction.update(workspaceDoc(dataScope,"exams",exam.id),{accessCode:candidate,updatedAt:serverTimestamp()});
+          transaction.update(snapshotRef,{accessCode:candidate,updatedAt:serverTimestamp()});
+          transaction.set(codeRef,{code:candidate,type:"quiz",snapshotId:snapshotRef.id,ownerUid:user.uid,...(dataScope.root==="schools"?{schoolId:dataScope.id}:{}),published:true,updatedAt:serverTimestamp()},{merge:true});
+        });
+        setExams((current)=>current.map((item)=>item.id===exam.id?{...item,accessCode:candidate}:item));
+        return candidate;
+      }catch(reason){
+        if(reason instanceof Error&&reason.message==="quiz-access-code-collision"){preferred="";continue;}
+        throw reason;
+      }
+    }
+    throw new Error("quiz-access-code-exhausted");
   }
 
   async function publishExam(exam:ExamRecord){
@@ -2222,15 +2443,33 @@ const [durationMinutes,setDurationMinutes]=useState("60");
     if(!Number.isFinite(startAtMs)){setToast({message:"Tanggal atau jam ujian tidak valid.",tone:"error"});return;}
     const endAtMs=startAtMs+duration*60000;
     const status:ExamRecord["status"]=startAtMs>Date.now()?"scheduled":"published";
-    const participants=students;
+    const participants=students.filter((student)=>student.className===exam.className);
     setBusyId(exam.id);
     try{
-      if(demo||!user){setExams((current)=>current.map((item)=>item.id===exam.id?{...item,status,snapshotId:"demo",durationMinutes:duration,startAtMs,endAtMs,targetStudentCount:undefined}:item));setReview(null);setToast({message:status==="scheduled"?"Ulangan demo berhasil dijadwalkan.":"Ulangan demo sudah online.",tone:"success"});return;}
+      if(demo||!user||!dataScope){setExams((current)=>current.map((item)=>item.id===exam.id?{...item,status,snapshotId:"demo",accessCode:"DEMO",durationMinutes:duration,startAtMs,endAtMs,targetStudentCount:undefined}:item));setReview(null);setToast({message:status==="scheduled"?"Ulangan demo berhasil dijadwalkan.":"Ulangan demo sudah online.",tone:"success"});return;}
       const snapshotRef=exam.snapshotId?doc(db,"publicSnapshots",exam.snapshotId):doc(collection(db,"publicSnapshots"));
-      const batch=writeBatch(db);
-      batch.update(doc(db,"users",user.uid,"exams",exam.id),{status,snapshotId:snapshotRef.id,durationMinutes:duration,startAtMs,endAtMs,targetStudentCount:deleteField(),updatedAt:serverTimestamp()});
-      batch.set(snapshotRef,{type:"quiz",ownerUid:user.uid,examId:exam.id,published:true,title:exam.title,subjectId:exam.subjectId??"",subject:exam.subject,className:exam.className,chapter:exam.chapter??"",gradeCategory:exam.gradeCategory??"summative",assessmentType:exam.assessmentType??"daily_test",questions:exam.questions,durationMinutes:duration,startAtMs,endAtMs,startAt:new Date(startAtMs),endAt:new Date(endAtMs),students:participants.map(({id,nis,name,className})=>({id,nis,name,className})),updatedAt:serverTimestamp()},{merge:true});
-      await batch.commit();setExams((current)=>current.map((item)=>item.id===exam.id?{...item,status,snapshotId:snapshotRef.id,durationMinutes:duration,startAtMs,endAtMs,targetStudentCount:undefined}:item));setReview(null);setToast({message:status==="scheduled"?"Ulangan dijadwalkan dan link countdown siap dibagikan.":"Ulangan sudah online dan link siswa siap dibagikan.",tone:"success"});
+      let preferred=await existingQuizAccessCode(exam);
+      let accessCode="";
+      for(let attempt=0;attempt<8;attempt+=1){
+        const candidate=preferred||generateQuizAccessCode();
+        const codeRef=doc(db,"publicLinkCodes",candidate);
+        try{
+          await runTransaction(db,async(transaction)=>{
+            const codeDocument=await transaction.get(codeRef);
+            if(codeDocument.exists()&&codeDocument.data().snapshotId!==snapshotRef.id)throw new Error("quiz-access-code-collision");
+            const publicQuestions = (exam.questions ?? []).map(({ answerIndex: _a, explanation: _e, ...q }) => q);
+            transaction.update(workspaceDoc(dataScope,"exams",exam.id),{status,snapshotId:snapshotRef.id,accessCode:candidate,durationMinutes:duration,startAtMs,endAtMs,targetStudentCount:deleteField(),updatedAt:serverTimestamp()});
+            transaction.set(snapshotRef,{type:"quiz",ownerUid:user.uid,...(dataScope.root==="schools"?{schoolId:dataScope.id}:{ }),examId:exam.id,accessCode:candidate,published:true,title:exam.title,subjectId:exam.subjectId??"",subject:exam.subject,className:exam.className,chapter:exam.chapter??"",gradeCategory:exam.gradeCategory??"summative",assessmentType:exam.assessmentType??"daily_test",questions:publicQuestions,durationMinutes:duration,startAtMs,endAtMs,startAt:new Date(startAtMs),endAt:new Date(endAtMs),students:participants.map(({id,nis,name,className})=>({id,nis,name,className})),updatedAt:serverTimestamp()},{merge:true});
+            transaction.set(codeRef,{code:candidate,type:"quiz",snapshotId:snapshotRef.id,ownerUid:user.uid,...(dataScope.root==="schools"?{schoolId:dataScope.id}:{}),published:true,updatedAt:serverTimestamp()},{merge:true});
+          });
+          accessCode=candidate;break;
+        }catch(reason){
+          if(reason instanceof Error&&reason.message==="quiz-access-code-collision"){preferred="";continue;}
+          throw reason;
+        }
+      }
+      if(!accessCode)throw new Error("quiz-access-code-exhausted");
+      setExams((current)=>current.map((item)=>item.id===exam.id?{...item,status,snapshotId:snapshotRef.id,accessCode,durationMinutes:duration,startAtMs,endAtMs,targetStudentCount:undefined}:item));setReview(null);setToast({message:status==="scheduled"?`Ulangan dijadwalkan. Kode siswa: ${accessCode}`:`Ulangan online. Kode siswa: ${accessCode}`,tone:"success"});
     }catch{setToast({message:"Ulangan gagal dipublikasikan.",tone:"error"});}
     finally{setBusyId("");}
   }
@@ -2239,16 +2478,55 @@ const [durationMinutes,setDurationMinutes]=useState("60");
     setBusyId(exam.id);
     try{
       if(demo||!user)setExams((current)=>current.map((item)=>item.id===exam.id?{...item,status:"draft"}:item));
-      else{const batch=writeBatch(db);batch.update(doc(db,"users",user.uid,"exams",exam.id),{status:"draft",updatedAt:serverTimestamp()});batch.update(doc(db,"publicSnapshots",exam.snapshotId),{published:false,updatedAt:serverTimestamp()});await batch.commit();}
+      else if(dataScope){const accessCode=await existingQuizAccessCode(exam);const batch=writeBatch(db);batch.update(workspaceDoc(dataScope,"exams",exam.id),{status:"draft",updatedAt:serverTimestamp()});batch.update(doc(db,"publicSnapshots",exam.snapshotId),{published:false,updatedAt:serverTimestamp()});if(accessCode)batch.update(doc(db,"publicLinkCodes",accessCode),{published:false,updatedAt:serverTimestamp()});await batch.commit();}
       setToast({message:"Ulangan dinonaktifkan dan link siswa ditutup.",tone:"success"});
     }catch{setToast({message:"Ulangan gagal dinonaktifkan.",tone:"error"});}
     finally{setBusyId("");}
   }
 
+  async function finishExamNow(exam:ExamRecord){
+    if(!exam.snapshotId)return;
+    const related=examAttempts(exam);
+    const active=related.filter((attempt)=>attempt.status==="active");
+    const registered=students.filter((student)=>student.className===exam.className).length;
+    const absent=Math.max(0,registered-related.length);
+    if(!window.confirm(`Matikan ulangan “${exam.title}” sekarang? ${active.length} siswa yang masih mengerjakan akan dinilai dari jawaban terakhir. ${absent} siswa yang belum ikut tidak dihitung. Hasil langsung dapat dilihat siswa.`))return;
+    const endedAtMs=Date.now();
+    setBusyId(exam.id);
+    try{
+      if(demo||!user){
+        setExams((current)=>current.map((item)=>item.id===exam.id?{...item,status:"finished",endAtMs:endedAtMs,endedAtMs,endedManually:true,targetStudentCount:related.length}:item));
+        setAttempts((current)=>current.map((attempt)=>attempt.examId===exam.id&&attempt.status==="active"?{...attempt,status:"finished",finishReason:"ditutup_guru"}:attempt));
+      }else{
+        const batch=writeBatch(db);
+        batch.update(workspaceDoc(dataScope!,"exams",exam.id),{status:"finished",endAtMs:endedAtMs,endedAtMs,endedAt:serverTimestamp(),endedManually:true,targetStudentCount:related.length,updatedAt:serverTimestamp()});
+        batch.update(doc(db,"publicSnapshots",exam.snapshotId),{published:true,questions:exam.questions,endAtMs:endedAtMs,endAt:serverTimestamp(),endedAtMs,endedAt:serverTimestamp(),endedManually:true,updatedAt:serverTimestamp()});
+        for(const attempt of active){
+          const randomized=createRandomizedQuiz(exam.questions,attempt.randomSeed??`${exam.snapshotId}:${attempt.nis}`);
+          const savedAnswers=attempt.answers??{};
+          const correct=randomized.reduce((total,question,index)=>total+(savedAnswers[String(index)]===question.answerIndex?1:0),0);
+          const score=randomized.length?Math.round(correct/randomized.length*100):0;
+          const durationSeconds=Math.max(0,Math.min(Math.floor((endedAtMs-(attempt.startedAtMs??endedAtMs))/1000),(exam.durationMinutes??60)*60));
+          batch.update(doc(db,"publicQuizAttempts",attempt.id),{status:"finished",correctCount:correct,score,durationSeconds,finishedAt:serverTimestamp(),finishReason:"ditutup_guru",updatedAt:serverTimestamp()});
+        }
+        await batch.commit();
+      }
+      setMonitor(null);
+      setToast({message:`Ulangan dimatikan. Hasil ${related.length} peserta sekarang dapat dilihat.`,tone:"success"});
+    }catch{setToast({message:"Ulangan belum dapat dimatikan. Periksa koneksi lalu coba lagi.",tone:"error"});}
+    finally{setBusyId("");}
+  }
+
   async function copyQuizLink(exam:ExamRecord){
-    if(!exam.snapshotId||(exam.status!=="published"&&exam.status!=="scheduled")){setToast({message:"Jadwalkan atau terapkan ulangan terlebih dahulu.",tone:"error"});return;}
-    try{await navigator.clipboard.writeText(`${location.origin}/public/quiz/${encodeURIComponent(exam.snapshotId)}`);setToast({message:"Link ulangan berhasil disalin.",tone:"success"});}
+    if(!exam.snapshotId||!["published","scheduled","finished"].includes(exam.status)){setToast({message:"Jadwalkan atau terapkan ulangan terlebih dahulu.",tone:"error"});return;}
+    try{const accessCode=await ensureQuizAccessCode(exam);const link=accessCode==="DEMO"?`${location.origin}/link/demo`:buildQuizShortUrl(accessCode,location.origin);await navigator.clipboard.writeText(link);setToast({message:`Link pendek disalin. Kode ulangan: ${accessCode}`,tone:"success"});}
     catch{setToast({message:"Link tidak dapat disalin otomatis.",tone:"error"});}
+  }
+
+  async function copyQuizCode(exam:ExamRecord){
+    if(!exam.snapshotId||!["published","scheduled","finished"].includes(exam.status)){setToast({message:"Jadwalkan atau terapkan ulangan terlebih dahulu.",tone:"error"});return;}
+    try{const accessCode=await ensureQuizAccessCode(exam);await navigator.clipboard.writeText(accessCode);setToast({message:`Kode ${accessCode} berhasil disalin. Siswa memasukkannya di smart-att.web.id/link.`,tone:"success"});}
+    catch{setToast({message:"Kode ulangan belum dapat dibuat atau disalin.",tone:"error"});}
   }
 
   function printExamPdf(exam:ExamRecord){
@@ -2261,7 +2539,7 @@ const [durationMinutes,setDurationMinutes]=useState("60");
 
   async function removeExam(exam:ExamRecord){
     if(!window.confirm(`Hapus ulangan “${exam.title}”?`))return;
-    try{if(demo||!user)setExams((current)=>current.filter((item)=>item.id!==exam.id));else{const batch=writeBatch(db);batch.delete(doc(db,"users",user.uid,"exams",exam.id));if(exam.snapshotId)batch.delete(doc(db,"publicSnapshots",exam.snapshotId));await batch.commit();}setToast({message:"Ulangan berhasil dihapus.",tone:"success"});}
+    try{if(demo||!user||!dataScope)setExams((current)=>current.filter((item)=>item.id!==exam.id));else{const accessCode=await existingQuizAccessCode(exam);const batch=writeBatch(db);batch.delete(workspaceDoc(dataScope,"exams",exam.id));if(exam.snapshotId)batch.delete(doc(db,"publicSnapshots",exam.snapshotId));if(accessCode)batch.delete(doc(db,"publicLinkCodes",accessCode));await batch.commit();}setToast({message:"Ulangan berhasil dihapus.",tone:"success"});}
     catch{setToast({message:"Ulangan gagal dihapus.",tone:"error"});}
   }
 
@@ -2279,7 +2557,25 @@ const [durationMinutes,setDurationMinutes]=useState("60");
 
   function examAttempts(exam:ExamRecord){return attempts.filter((attempt)=>attempt.examId===exam.id);}
 
-  return <><SectionHeading eyebrow="Smart Quiz" title="Soal & ulangan" description="Tinjau draf, publikasikan ujian, dan pantau pengerjaan siswa secara langsung."/><div className="mb-6 grid gap-4 sm:grid-cols-3"><StatCard label="Ujian online" value={String(activeCount)} note="Link dapat dibuka siswa" icon={Timer} tone="bg-teal-50 text-teal-600"/><StatCard label="Draf ditinjau" value={String(draftCount)} note="Siap diterapkan" icon={FileText} tone="bg-sky-50 text-sky-600"/><StatCard label="Total butir soal" value={String(questionCount)} note="Tersimpan di Firebase" icon={ListChecks} tone="bg-violet-50 text-violet-600"/></div>{loading?<div className="grid min-h-52 place-items-center rounded-2xl border border-slate-200 bg-white"><Loader2 className="animate-spin text-teal-600" size={30}/></div>:exams.length===0?<div className="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-14 text-center"><ClipboardCheck className="mx-auto text-teal-600" size={30}/><h3 className="mt-4 font-black">Belum ada draf soal</h3><p className="mt-1 text-sm text-slate-500">Buat dan simpan soal melalui Generator Soal AI.</p></div>:<div className="space-y-4">{exams.map((exam)=>{const online=exam.status==="published"||exam.status==="scheduled";const related=examAttempts(exam);const finished=related.filter((item)=>item.status==="finished");const violations=related.reduce((total,item)=>total+(item.violations?.length??0),0);return <article key={exam.id} className="flex flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:flex-row lg:items-center"><div className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-teal-50 text-teal-700"><ClipboardCheck size={25}/></div><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="font-black">{exam.title}</h3><span className={`rounded-full px-2 py-1 text-[9px] font-black ${exam.status==="scheduled"?'bg-violet-50 text-violet-700':online?'bg-emerald-50 text-emerald-700':'bg-sky-50 text-sky-700'}`}>{exam.status==="scheduled"?'TERJADWAL':online?'ONLINE':'DRAF'}</span>{exam.source==="ai"&&<span className="rounded-full bg-violet-50 px-2 py-1 text-[9px] font-black text-violet-700">DARI AI</span>}</div><div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-400"><span>{exam.className}</span><span>{exam.questions?.length??0} soal</span><span>{exam.durationMinutes??60} menit</span>{exam.startAtMs&&<span>Mulai {new Date(exam.startAtMs).toLocaleString("id-ID",{dateStyle:"medium",timeStyle:"short"})}</span>}{online&&<><span>{finished.length}/{exam.targetStudentCount??targetStudents(exam).length} selesai</span><span className={violations?'font-bold text-rose-500':''}>{violations} pelanggaran</span></>}</div></div><div className="flex flex-wrap gap-2">{online?<><button onClick={()=>void copyQuizLink(exam)} className="flex items-center gap-2 rounded-xl bg-teal-600 px-3 py-2.5 text-xs font-bold text-white"><Link2 size={14}/>Link siswa</button><button onClick={()=>setMonitor(exam)} className="flex items-center gap-2 rounded-xl bg-slate-950 px-3 py-2.5 text-xs font-bold text-white"><Activity size={14}/>Monitor</button><button disabled={busyId===exam.id} onClick={()=>void unpublishExam(exam)} title="Nonaktifkan" className="rounded-xl border border-slate-200 p-2.5 text-slate-500"><XCircle size={15}/></button></>:<button onClick={()=>{setReview(exam);setDurationMinutes(String(exam.durationMinutes??60));if(exam.startAtMs){const date=new Date(exam.startAtMs);setScheduleDate(`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`);setScheduleTime(date.toTimeString().slice(0,5))}}} className="flex items-center gap-2 rounded-xl bg-slate-950 px-3 py-2.5 text-xs font-bold text-white"><FileText size={14}/>Tinjau & terapkan</button>}<button onClick={()=>printExamPdf(exam)} title="Simpan PDF" className="rounded-xl border border-slate-200 p-2.5 text-slate-500"><Download size={15}/></button><button onClick={()=>void removeExam(exam)} title="Hapus" className="rounded-xl border border-rose-100 p-2.5 text-rose-500"><Trash2 size={15}/></button></div></article>})}</div>}
+  return <>
+    <SectionHeading eyebrow="Smart Quiz" title="Soal & ulangan" description="Tinjau draf, publikasikan ujian, dan pantau pengerjaan siswa secara langsung."/>
+    <div className="mb-6 grid gap-4 sm:grid-cols-3">
+      <StatCard label="Ujian online" value={String(activeCount)} note="Link dapat dibuka siswa" icon={Timer} tone="bg-teal-50 text-teal-600"/>
+      <StatCard label="Draf ditinjau" value={String(draftCount)} note="Siap diterapkan" icon={FileText} tone="bg-sky-50 text-sky-600"/>
+      <StatCard label="Total butir soal" value={String(questionCount)} note="Tersimpan di Firebase" icon={ListChecks} tone="bg-violet-50 text-violet-600"/>
+    </div>
+    {loading?<div className="grid min-h-52 place-items-center rounded-2xl border border-slate-200 bg-white"><Loader2 className="animate-spin text-teal-600" size={30}/></div>:exams.length===0?<div className="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-14 text-center"><ClipboardCheck className="mx-auto text-teal-600" size={30}/><h3 className="mt-4 font-black">Belum ada draf soal</h3><p className="mt-1 text-sm text-slate-500">Buat dan simpan soal melalui Generator Soal AI.</p></div>:<div className="space-y-4">{exams.map((exam)=>{
+      const online=exam.status==="published"||exam.status==="scheduled";
+      const completed=exam.status==="finished";
+      const related=examAttempts(exam);
+      const finished=related.filter((item)=>item.status==="finished");
+      const violations=related.reduce((total,item)=>total+(item.violations?.length??0),0);
+      const canFinishNow=online&&(exam.startAtMs??0)<=Date.now();
+      return <article key={exam.id} className="flex flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:flex-row lg:items-center">
+        <div className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-teal-50 text-teal-700"><ClipboardCheck size={25}/></div>
+        <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="font-black">{exam.title}</h3><span className={`rounded-full px-2 py-1 text-[9px] font-black ${completed?'bg-slate-100 text-slate-700':exam.status==="scheduled"?'bg-violet-50 text-violet-700':online?'bg-emerald-50 text-emerald-700':'bg-sky-50 text-sky-700'}`}>{completed?'SELESAI':exam.status==="scheduled"?'TERJADWAL':online?'ONLINE':'DRAF'}</span>{exam.source==="ai"&&<span className="rounded-full bg-violet-50 px-2 py-1 text-[9px] font-black text-violet-700">DARI AI</span>}</div><div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-400"><span>{exam.className}</span><span>{exam.questions?.length??0} soal</span><span>{exam.durationMinutes??60} menit</span>{exam.accessCode&&<span className="font-black tracking-wider text-teal-700">Kode {exam.accessCode}</span>}{exam.startAtMs&&<span>Mulai {new Date(exam.startAtMs).toLocaleString("id-ID",{dateStyle:"medium",timeStyle:"short"})}</span>}{(online||completed)&&<><span>{finished.length}/{exam.targetStudentCount??targetStudents(exam).length} selesai</span><span className={violations?'font-bold text-rose-500':''}>{violations} pelanggaran</span></>}</div></div>
+        <div className="flex flex-wrap gap-2">{online?<><button onClick={()=>void copyQuizLink(exam)} className="flex items-center gap-2 rounded-xl bg-teal-600 px-3 py-2.5 text-xs font-bold text-white"><Link2 size={14}/>Link pendek</button><button onClick={()=>void copyQuizCode(exam)} className="flex items-center gap-2 rounded-xl border border-teal-200 bg-teal-50 px-3 py-2.5 text-xs font-bold text-teal-800"><KeyRound size={14}/>{exam.accessCode||"Buat kode"}</button><button onClick={()=>setMonitor(exam)} className="flex items-center gap-2 rounded-xl bg-slate-950 px-3 py-2.5 text-xs font-bold text-white"><Activity size={14}/>Monitor</button>{canFinishNow&&<button disabled={busyId===exam.id} onClick={()=>void finishExamNow(exam)} className="flex items-center gap-2 rounded-xl bg-rose-700 px-3 py-2.5 text-xs font-bold text-white disabled:opacity-50">{busyId===exam.id?<Loader2 className="animate-spin" size={14}/>:<XCircle size={14}/>}Matikan ulangan</button>}<button disabled={busyId===exam.id} onClick={()=>void unpublishExam(exam)} title="Nonaktifkan link tanpa membuka hasil" className="rounded-xl border border-slate-200 p-2.5 text-slate-500"><XCircle size={15}/></button></>:completed?<><button onClick={()=>void copyQuizLink(exam)} className="flex items-center gap-2 rounded-xl bg-teal-600 px-3 py-2.5 text-xs font-bold text-white"><Link2 size={14}/>Link pendek</button><button onClick={()=>void copyQuizCode(exam)} className="flex items-center gap-2 rounded-xl border border-teal-200 bg-teal-50 px-3 py-2.5 text-xs font-bold text-teal-800"><KeyRound size={14}/>{exam.accessCode||"Buat kode"}</button><button onClick={()=>setMonitor(exam)} className="flex items-center gap-2 rounded-xl bg-slate-950 px-3 py-2.5 text-xs font-bold text-white"><Activity size={14}/>Lihat hasil</button></>:<button onClick={()=>{setReview(exam);setDurationMinutes(String(exam.durationMinutes??60));if(exam.startAtMs){const date=new Date(exam.startAtMs);setScheduleDate(`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`);setScheduleTime(date.toTimeString().slice(0,5))}}} className="flex items-center gap-2 rounded-xl bg-slate-950 px-3 py-2.5 text-xs font-bold text-white"><FileText size={14}/>Tinjau & terapkan</button>}<button onClick={()=>printExamPdf(exam)} title="Simpan PDF" className="rounded-xl border border-slate-200 p-2.5 text-slate-500"><Download size={15}/></button><button onClick={()=>void removeExam(exam)} title="Hapus" className="rounded-xl border border-rose-100 p-2.5 text-rose-500"><Trash2 size={15}/></button></div>
+      </article>})}</div>}
     {review&&<Modal title="Tinjau & terapkan ulangan" subtitle={`${review.title} · ${review.questions.length} soal`} onClose={()=>setReview(null)}><div className="mb-5 grid gap-3 sm:grid-cols-2"><Field label="Tanggal ujian" type="date" value={scheduleDate} onChange={setScheduleDate}/><Field label="Jam mulai" type="time" value={scheduleTime} onChange={setScheduleTime}/><Field label="Durasi ujian (menit)" type="number" value={durationMinutes} onChange={setDurationMinutes}/><div className="rounded-xl bg-teal-50 p-4"><p className="text-[10px] font-black text-teal-600">AKSES UJIAN</p><p className="mt-1 text-sm font-black text-teal-950">Semua NIS terdaftar · melalui link</p></div></div><div className="max-h-[48vh] space-y-3 overflow-y-auto pr-1">{review.questions.map((question,index)=><article key={`${index}-${question.question}`} className="rounded-xl border border-slate-200 p-4"><h4 className="text-sm font-black">{index+1}. {question.question}</h4><div className="mt-2 grid gap-1.5 sm:grid-cols-2">{question.choices.map((choice,choiceIndex)=><p key={choiceIndex} className={`rounded-lg px-2.5 py-2 text-xs ${choiceIndex===question.answerIndex?'bg-emerald-50 font-bold text-emerald-800':'bg-slate-50 text-slate-600'}`}>{String.fromCharCode(65+choiceIndex)}. {choice}</p>)}</div></article>)}</div><div className="mt-5 flex flex-col gap-2 sm:flex-row"><button onClick={()=>printExamPdf(review)} className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-slate-200 py-3 text-xs font-extrabold"><Download size={15}/>Simpan PDF</button><button disabled={busyId===review.id} onClick={()=>void publishExam(review)} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-teal-600 py-3 text-xs font-extrabold text-white disabled:opacity-60">{busyId===review.id?<Loader2 className="animate-spin" size={16}/>:<Send size={16}/>}Jadwalkan / terapkan</button></div></Modal>}
     {monitor&&(()=>{const related=examAttempts(monitor);const finished=related.filter((item)=>item.status==="finished");const top=[...finished].sort((a,b)=>(b.score??0)-(a.score??0)||(a.durationSeconds??Infinity)-(b.durationSeconds??Infinity)).slice(0,5);const target=monitor.targetStudentCount??targetStudents(monitor).length;const allDone=target>0&&finished.length>=target;return <Modal title="Monitoring & peringkat" subtitle={`${monitor.title} · ${finished.length}/${target} siswa selesai`} onClose={()=>setMonitor(null)}>{allDone&&<div className="mb-4 rounded-2xl bg-emerald-50 p-4 text-sm font-bold text-emerald-800"><CheckCircle2 className="mr-2 inline" size={18}/>Semua siswa telah menyelesaikan ujian.</div>}<h4 className="mb-3 text-sm font-black">5 nilai tertinggi dan tercepat</h4>{top.length?<div className="space-y-2">{top.map((attempt,index)=><div key={attempt.id} className="flex items-center gap-3 rounded-xl border border-slate-200 p-3"><span className={`grid h-9 w-9 place-items-center rounded-xl text-sm font-black ${index===0?'bg-amber-100 text-amber-700':'bg-slate-100 text-slate-600'}`}>{index+1}</span><div className="min-w-0 flex-1"><p className="truncate text-sm font-black">{attempt.studentName}</p><p className="text-[10px] text-slate-400">NIS {attempt.nis} · {formatCountdown(attempt.durationSeconds??0)}</p></div><p className="text-xl font-black text-teal-700">{attempt.score??0}</p></div>)}</div>:<p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">Belum ada siswa yang menyelesaikan ujian.</p>}<h4 className="mb-3 mt-6 text-sm font-black">Aktivitas pengawasan</h4><div className="space-y-2">{related.map((attempt)=><div key={attempt.id} className="flex items-center justify-between rounded-xl bg-slate-50 p-3"><div><p className="text-sm font-bold">{attempt.studentName}</p><p className="text-[10px] text-slate-400">{attempt.status==="finished"?'Selesai':'Mengerjakan'} · Login ulang {attempt.reloginCount??0}x</p></div><div className="flex flex-col items-end gap-1.5"><span className={`rounded-lg px-2.5 py-1.5 text-xs font-black ${(attempt.violations?.length??0)>0?'bg-rose-100 text-rose-700':'bg-emerald-100 text-emerald-700'}`}>{attempt.violations?.length??0} pelanggaran</span>{attempt.status==="active"&&<button onClick={()=>void unlockExamDevice(attempt)} className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[10px] font-black text-amber-700"><KeyRound className="mr-1 inline" size={12}/>Buka kunci perangkat</button>}</div></div>)}</div></Modal>})()}
   </>;
@@ -2322,9 +2618,9 @@ function ExamsView({user,demo,setToast}:{user:User|null;demo:boolean;setToast:(t
   return <><SectionHeading eyebrow="Smart Quiz" title="Soal & ulangan" description="Draf dari Generator Soal AI otomatis muncul di halaman ini." action={<button onClick={()=>setToast({message:"Untuk membuat soal otomatis, buka menu Generator Soal AI.",tone:"success"})} className="flex items-center gap-2 rounded-xl bg-teal-600 px-4 py-2.5 text-xs font-extrabold text-white"><Plus size={17}/>Buat ulangan</button>}/><div className="mb-6 grid gap-4 sm:grid-cols-3"><StatCard label="Ujian aktif" value={String(activeCount)} note="Terjadwal atau dipublikasikan" icon={Timer} tone="bg-teal-50 text-teal-600"/><StatCard label="Draf soal" value={String(draftCount)} note="Siap ditinjau guru" icon={FileText} tone="bg-sky-50 text-sky-600"/><StatCard label="Total butir soal" value={String(questionCount)} note="Dari semua draf dan ujian" icon={ListChecks} tone="bg-violet-50 text-violet-600"/></div>{loading?<div className="grid min-h-52 place-items-center rounded-2xl border border-slate-200 bg-white"><Loader2 className="animate-spin text-teal-600" size={30}/></div>:exams.length===0?<div className="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-14 text-center"><div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-sky-50 text-sky-700"><ClipboardCheck size={26}/></div><h3 className="mt-4 font-black">Belum ada draf soal</h3><p className="mt-1 text-sm text-slate-500">Buat soal di Generator Soal AI, lalu simpan sebagai draf ulangan.</p></div>:<div className="space-y-4">{exams.map((exam)=>{const status=statusStyle[exam.status]??statusStyle.draft;const total=Array.isArray(exam.questions)?exam.questions.length:0;return <article key={exam.id} className="flex flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:flex-row lg:items-center"><div className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-[#e7f6f5] text-teal-700"><ClipboardCheck size={25}/></div><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="font-black">{exam.title}</h3><span className={`rounded-full px-2 py-1 text-[9px] font-black ${status.tone}`}>{status.label}</span>{exam.source==="ai"&&<span className="rounded-full bg-violet-50 px-2 py-1 text-[9px] font-black text-violet-700">DARI AI</span>}</div><div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-400"><span>{exam.className}</span><span>{exam.subject}</span><span>{total} soal</span>{exam.chapter&&<span>{exam.chapter}</span>}</div></div><div className="flex flex-wrap gap-2"><button onClick={()=>setReview(exam)} className="flex items-center gap-2 rounded-xl bg-slate-950 px-3 py-2.5 text-xs font-bold text-white"><FileText size={14}/>Tinjau soal</button>{exam.status!=="published"&&<button onClick={()=>void removeExam(exam)} title="Hapus draf" className="rounded-xl border border-rose-100 p-2.5 text-rose-500 hover:bg-rose-50"><Trash2 size={15}/></button>}</div></article>})}</div>}{review&&<Modal title={review.title} subtitle={`${review.className} · ${review.questions?.length??0} soal`} onClose={()=>setReview(null)}><div className="space-y-4">{(review.questions??[]).map((question,index)=><article key={`${index}-${question.question}`} className="rounded-2xl border border-slate-200 p-4"><div className="flex gap-3"><span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-slate-950 text-xs font-black text-white">{index+1}</span><div className="min-w-0 flex-1"><h4 className="text-sm font-black leading-6">{question.question}</h4><div className="mt-3 space-y-2">{question.choices.map((choice,choiceIndex)=><div key={`${choiceIndex}-${choice}`} className={`flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-semibold ${choiceIndex===question.answerIndex?'bg-emerald-50 text-emerald-800':'bg-slate-50 text-slate-600'}`}><span className={`grid h-6 w-6 place-items-center rounded-md text-[10px] font-black ${choiceIndex===question.answerIndex?'bg-emerald-600 text-white':'bg-slate-200 text-slate-500'}`}>{String.fromCharCode(65+choiceIndex)}</span>{choice}</div>)}</div>{question.explanation&&<p className="mt-3 text-xs leading-5 text-sky-800"><span className="font-black">Pembahasan:</span> {question.explanation}</p>}</div></div></article>)}{(!review.questions||review.questions.length===0)&&<p className="rounded-xl bg-amber-50 p-4 text-sm text-amber-800">Draf ini belum memiliki butir soal.</p>}</div></Modal>}</>;
 }
 
-function AiGenerator({user,demo,setToast}:{user:User|null;demo:boolean;setToast:(t:Toast)=>void}){
-  const [subject,setSubject]=useState("Matematika");
-  const [grade,setGrade]=useState("VII");
+function AiGenerator({user,demo,setToast,scope,allowedClassNames,allowedSubjectNames}:{user:User|null;demo:boolean;setToast:(t:Toast)=>void;scope?:WorkspaceScope;allowedClassNames?:string[];allowedSubjectNames?:string[]}){
+  const [subject,setSubject]=useState(allowedSubjectNames?.[0]||"Matematika");
+  const [grade,setGrade]=useState(allowedClassNames?.[0]||"VII");
   const [chapter,setChapter]=useState("Persamaan linear satu variabel");
   const [count,setCount]=useState("20");
   const [choices,setChoices]=useState("4");
@@ -2356,9 +2652,11 @@ function AiGenerator({user,demo,setToast}:{user:User|null;demo:boolean;setToast:
 
   async function saveDraft(){
     if(!questions.length){setToast({message:"Baca hasil AI terlebih dahulu.",tone:"error"});return;}
+    if(allowedClassNames?.length&&!allowedClassNames.includes(grade.trim())){setToast({message:"Kelas soal harus berasal dari kelas yang ditugaskan.",tone:"error"});return;}
+    if(allowedSubjectNames?.length&&!allowedSubjectNames.includes(subject.trim())){setToast({message:"Mapel soal belum diizinkan untuk guru ini.",tone:"error"});return;}
     setSaving(true);
     try{
-      if(!demo&&user)await addDoc(collection(db,"users",user.uid,"exams"),{title:`${subject} — ${chapter}`,subject,className:grade,chapter,questions,status:"draft",source:"ai",createdAt:serverTimestamp(),updatedAt:serverTimestamp()});
+      if(!demo&&user)await addDoc(scope?workspaceCollection(scope,"exams"):collection(db,"users",user.uid,"exams"),{...(scope?.root==="schools"?{schoolId:scope.id}:{ownerUid:user.uid}),title:`${subject} — ${chapter}`,subject,className:grade,chapter,questions,status:"draft",source:"ai",createdAt:serverTimestamp(),updatedAt:serverTimestamp()});
       setToast({message:`Draf ulangan dengan ${questions.length} soal berhasil disimpan.`,tone:"success"});
     }catch{setToast({message:"Draf soal gagal disimpan.",tone:"error"});}
     finally{setSaving(false);}
@@ -2628,6 +2926,7 @@ function AbsenceConfirmationForm(){
     try{
       if(!snapshotId.startsWith("demo-"))await addDoc(collection(db,"publicAbsenceResponses"),{
         snapshotId,
+        ...(snapshot.schoolId?{schoolId:snapshot.schoolId}:{}),
         ownerUid:snapshot.ownerUid,
         sessionId:snapshot.sessionId,
         studentId:snapshot.student.id,

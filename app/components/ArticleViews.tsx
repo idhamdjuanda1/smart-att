@@ -3,12 +3,13 @@
 import { useEffect, useMemo, useState } from "react";
 import type { User } from "firebase/auth";
 import { ArrowLeft, ExternalLink, FileText, ImagePlus, Loader2, PencilLine, Plus, Save, Trash2 } from "lucide-react";
-import { collection, deleteDoc, doc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
+import { collection, deleteDoc, doc, onSnapshot, query, serverTimestamp, setDoc, where } from "firebase/firestore";
 import { db } from "../lib/firebase";
 
 export type ArticleRecord = {
   id: string; slug: string; title: string; excerpt: string; body: string; tags: string[];
-  coverKey?: string; externalLink?: string; published: boolean; publishedAtMs?: number; updatedAtMs?: number;
+  coverKey?: string; coverUrl?: string; externalLink?: string; published: boolean;
+  publishedAtMs?: number; updatedAtMs?: number; publishedAt?: unknown; updatedAt?: unknown;
 };
 
 export const DEFAULT_ARTICLE: ArticleRecord = {
@@ -32,14 +33,32 @@ Jika dilakukan konsisten, kebiasaan hadir tepat waktu tumbuh melalui rutinitas y
 
 function usePublishedArticles() {
   const [articles,setArticles]=useState<ArticleRecord[]>([DEFAULT_ARTICLE]);
-  useEffect(()=>onSnapshot(collection(db,"articles"),(snapshot)=>{
-    const rows=snapshot.docs.map((item)=>({id:item.id,...item.data()} as ArticleRecord)).filter((item)=>item.published);
-    setArticles((rows.length?rows:[DEFAULT_ARTICLE]).sort((a,b)=>(b.publishedAtMs??0)-(a.publishedAtMs??0)));
+  useEffect(()=>onSnapshot(query(collection(db,"articles"),where("published","==",true)),(snapshot)=>{
+    const rows=snapshot.docs.map((item)=>({id:item.id,...item.data()} as ArticleRecord));
+    setArticles((rows.length?rows:[DEFAULT_ARTICLE]).sort((a,b)=>articleDateMs(b)-articleDateMs(a)));
   },()=>setArticles([DEFAULT_ARTICLE])),[]);
   return articles;
 }
 
-function coverUrl(article:ArticleRecord){return article.coverKey?`/api/storage/article/${encodeURIComponent(article.coverKey)}`:""}
+function articleDateMs(article:ArticleRecord){
+  const read=(value:unknown)=>{
+    if(typeof value==="number"&&Number.isFinite(value))return value;
+    if(typeof value==="string"){const parsed=Date.parse(value);return Number.isFinite(parsed)?parsed:0;}
+    if(value&&typeof value==="object"){
+      const candidate=value as {toMillis?:()=>number;seconds?:number;_seconds?:number};
+      if(typeof candidate.toMillis==="function"){const parsed=candidate.toMillis();if(Number.isFinite(parsed))return parsed;}
+      const seconds=candidate.seconds??candidate._seconds;if(typeof seconds==="number")return seconds*1000;
+    }
+    return 0;
+  };
+  return read(article.publishedAtMs)||read(article.publishedAt)||read(article.updatedAtMs)||read(article.updatedAt);
+}
+
+function coverUrl(article:ArticleRecord){
+  const value=article.coverKey||article.coverUrl||"";
+  if(!value)return "";
+  return /^https?:\/\//i.test(value)?value:`/api/storage/article/${encodeURIComponent(value)}`;
+}
 
 export function LoginArticlePreview({variant="dark"}:{variant?:"dark"|"light"}){
   const article=usePublishedArticles()[0]??DEFAULT_ARTICLE; const light=variant==="light";
@@ -58,7 +77,7 @@ export function PublicArticles({slug}:{slug?:string}){
 export function ArticleManager({user}:{user:User}){
   const empty={...DEFAULT_ARTICLE,id:"",slug:"",title:"",excerpt:"",body:"",tags:[],published:false,publishedAtMs:undefined};
   const [articles,setArticles]=useState<ArticleRecord[]>([]); const [form,setForm]=useState<ArticleRecord>(empty); const [tags,setTags]=useState(""); const [busy,setBusy]=useState(false);
-  useEffect(()=>onSnapshot(collection(db,"articles"),(snapshot)=>setArticles(snapshot.docs.map((item)=>({id:item.id,...item.data()} as ArticleRecord)).sort((a,b)=>(b.updatedAtMs??0)-(a.updatedAtMs??0)))),[]);
+  useEffect(()=>onSnapshot(collection(db,"articles"),(snapshot)=>setArticles(snapshot.docs.map((item)=>({id:item.id,...item.data()} as ArticleRecord)).sort((a,b)=>articleDateMs(b)-articleDateMs(a)))),[]);
   const editing=useMemo(()=>Boolean(form.id),[form.id]);
   function edit(item:ArticleRecord){setForm(item);setTags(item.tags.join(", "));}
   function useExample(){setForm({...DEFAULT_ARTICLE,id:DEFAULT_ARTICLE.slug});setTags(DEFAULT_ARTICLE.tags.join(", "));}

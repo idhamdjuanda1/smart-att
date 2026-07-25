@@ -13,8 +13,8 @@ const { d1, r2 } = hostingConfig;
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 
 const localBindingConfig = {
-  main: "./worker/index.ts",
-  compatibility_flags: ["nodejs_compat"],
+  // Keep local Miniflare compatible with the runtime bundled in this project.
+  compatibility_date: "2026-05-22",
   d1_databases: d1
     ? [
         {
@@ -56,6 +56,7 @@ export default async function config() {
     const { cloudflare } = await import("@cloudflare/vite-plugin");
     plugins.push(
       cloudflare({
+        configPath: "./build/wrangler.dev.toml",
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
         config: localBindingConfig,
       }),

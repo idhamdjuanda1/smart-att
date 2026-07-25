@@ -1,0 +1,8 @@
+name = "smart-att-dev"
+main = "../worker/index.ts"
+compatibility_date = "2026-05-22"
+compatibility_flags = ["nodejs_compat"]
+
+[[r2_buckets]]
+binding = "SMARTATT_R2"
+bucket_name = "smartatt-storage-local"

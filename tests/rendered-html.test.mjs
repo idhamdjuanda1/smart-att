@@ -6,7 +6,8 @@ async function render(pathname = "/") {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
-  return worker.fetch(
+  const fetchHandler = typeof worker === "function" ? worker : worker.fetch.bind(worker);
+  return fetchHandler(
     new Request(`http://localhost${pathname}`, { headers: { accept: "text/html" } }),
     { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
     { waitUntil() {}, passThroughOnException() {} },
@@ -45,10 +46,16 @@ test("includes professional attendance, exam, token, and admin modules", async (
   assert.match(examPortal, /Top 5 Ranking/);
   assert.match(examPortal, /Review jawaban/);
   assert.match(admin, /Aktivasi token/);
-  assert.match(admin, /Manajemen User/);
+  assert.match(admin, /Manajemen Pengguna/);
+  assert.match(admin, /Hapus permanen/);
+  assert.match(admin, /HAPUS PERMANEN/);
+  assert.match(admin, /\/api\/admin\/users\//);
+  assert.match(admin, /Akun dikelompokkan per sekolah/);
+  assert.match(admin, /PEMILIK · HAPUS TERAKHIR/);
+  assert.match(admin, /Hapus anggota dulu/);
   assert.match(admin, /ditambahkan dan tersimpan permanen/);
   assert.match(app, /Masa aktif SMART-ATT berakhir/);
-  assert.match(app, /Chat WhatsApp/);
+  assert.match(app, /WhatsApp Admin/);
   assert.match(operations, /importedFromUid/);
   assert.match(operations, /student\.guardian/);
   assert.match(app, /6285176932228/);
@@ -68,6 +75,14 @@ test("includes professional attendance, exam, token, and admin modules", async (
   assert.match(operations, /record\?\.status\s*===\s*"present"/);
   assert.match(operations, /record\?\.status \?\? "alpha"/);
   assert.match(operations, /Hadir terlambat/);
+  assert.match(operations, /\/sounds\/beep2\.mp3/);
+  assert.match(operations, /decodeAudioData/);
+  assert.match(operations, /gain\.gain\.value = 4/);
+  assert.doesNotMatch(operations, /createOscillator/);
+  assert.match(operations, /Pilih kamera sebelum scan/);
+  assert.match(operations, /Daftar hadir bulanan 1–31/);
+  assert.match(operations, /monthlyAttendanceMark/);
+  assert.match(operations, /Cetak \/ Simpan PDF/);
   assert.match(operations, /Ringkasan bulanan/);
   assert.match(operations, /Ringkasan semester/);
   assert.match(operations, /Persentase kehadiran/);
@@ -80,15 +95,35 @@ test("includes professional attendance, exam, token, and admin modules", async (
   assert.match(rules, /match \/articles/);
   assert.match(articles, /Membangun Kebiasaan Hadir Tepat Waktu/);
   assert.match(articles, /ArticleManager/);
+  assert.match(articles, /where\("published",\s*"==",\s*true\)/);
+  assert.match(articles, /articleDateMs\(b\)-articleDateMs\(a\)/);
+  assert.match(articles, /api\/storage\/article/);
   assert.match(app, /LoginArticlePreview variant="light"/);
+  assert.match(app, /Apa perbedaan akun Individual dan School/);
+  assert.match(app, /SATT-I untuk Individual serta SATT-S untuk School/);
+  assert.match(app, /terakhir diperbarui 22 Juli 2026/);
+  assert.match(app, /Admin tidak meminta password/);
   assert.match(articles, /variant="dark"/);
   assert.match(worker, /api\/storage\/articles/);
   assert.match(worker, /api\/storage\/article/);
   assert.match(app, /Pindai siswa lama/);
   assert.match(app, /studentClassLinks/);
-  assert.match(app, /menunggu persetujuan guru lama/);
+  assert.match(app, /Menunggu persetujuan guru lama/);
   assert.match(rules, /match \/studentClassLinks/);
   assert.match(worker, /api\/storage\/transfer-student-photo/);
   assert.doesNotMatch(operations, /ownerUid !== user\.uid\) await setDoc\(doc\(db, "users"/);
-  assert.doesNotMatch(`${app}\n${operations}\n${examPortal}\n${admin}`, /localStorage|sessionStorage/);
+  assert.doesNotMatch(`${app}\n${examPortal}\n${admin}`, /localStorage|sessionStorage/);
+  assert.match(operations, /smart-att\.scan\.cameraId/);
+  assert.doesNotMatch(operations, /sessionStorage/);
+  assert.match(operations, /Hapus absensi 1 hari/);
+  assert.match(operations, /deleted: true/);
+  assert.match(operations, /data\(\)\.deleted !== true/);
+  assert.match(app, /data\(\)\.deleted!==true/);
+  assert.match(app, /authSettled/);
+  assert.match(app, /finishAuth\(auth\.currentUser\)/);
+  assert.match(app, /Matikan ulangan/);
+  assert.match(app, /finishExamNow/);
+  assert.match(app, /finishReason:\s*"ditutup_guru"/);
+  assert.match(examPortal, /effectiveDeadline/);
+  assert.match(examPortal, /endedManually/);
 });

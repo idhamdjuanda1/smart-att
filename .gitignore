@@ -6,4 +6,8 @@ dist/
 .pages-inspect/
 .env
 .env.*
+.dev.vars
+*-firebase-adminsdk-*.json
 .wrangler/
+*.log
+build/local-pages/

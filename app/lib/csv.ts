@@ -15,6 +15,22 @@ export type CsvParseResult = {
   error?: string;
 };
 
+export type CsvTeacher = {
+  name: string;
+  email: string;
+  password: string;
+  primarySubjects: string[];
+  additionalSubjects: string[];
+  classNames: string[];
+};
+
+export type CsvTeacherParseResult = {
+  teachers: CsvTeacher[];
+  skippedRows: number;
+  delimiter: string;
+  error?: string;
+};
+
 function normalizeHeader(value: string): string {
   return value
     .replace(/^\uFEFF/, "")
@@ -80,6 +96,14 @@ function findColumn(headers: string[], aliases: string[]): number {
   return headers.findIndex((header) => aliases.includes(header));
 }
 
+export function normalizeClassKey(value: string): string {
+  return value
+    .normalize("NFKC")
+    .trim()
+    .toLocaleUpperCase("id-ID")
+    .replace(/[^A-Z0-9]+/g, "");
+}
+
 export function parseStudentsCsv(text: string, defaultClassName = "VII A"): CsvParseResult {
   const cleanText = text.replace(/^\uFEFF/, "").trim();
   if (!cleanText) return { students: [], skippedRows: 0, delimiter: ",", error: "File CSV kosong." };
@@ -133,4 +157,45 @@ export function parseStudentsCsv(text: string, defaultClassName = "VII A"): CsvP
   }
 
   return { students, skippedRows, delimiter };
+}
+
+function splitList(value: string): string[] {
+  return value.split(/[;|]/).map((item) => item.trim()).filter(Boolean);
+}
+
+export function parseTeachersCsv(text: string): CsvTeacherParseResult {
+  const cleanText = text.replace(/^\uFEFF/, "").trim();
+  if (!cleanText) return { teachers: [], skippedRows: 0, delimiter: ",", error: "File CSV guru kosong." };
+  const delimiter = detectDelimiter(cleanText);
+  const rows = parseRows(cleanText, delimiter);
+  if (rows.length < 2) return { teachers: [], skippedRows: 0, delimiter, error: "CSV guru tidak memiliki baris data." };
+  const headers = rows[0].map(normalizeHeader);
+  const nameIndex = findColumn(headers, ["nama", "namaguru", "namalengkap"]);
+  const emailIndex = findColumn(headers, ["email", "emailguru"]);
+  const passwordIndex = findColumn(headers, ["password", "katakunci", "sandi"]);
+  const primaryIndex = findColumn(headers, ["mapelutama", "mapelsesu bidang", "mapelsesuaibidang", "bidangutama", "mapel"]);
+  const additionalIndex = findColumn(headers, ["mapeltambahan", "mapellintasbidang", "tambahan", "mapeldiizinkan"]);
+  const classIndex = findColumn(headers, ["kelas", "kelasyangdiajar", "rombel"]);
+  if (nameIndex < 0 || emailIndex < 0 || passwordIndex < 0 || primaryIndex < 0) {
+    return { teachers: [], skippedRows: rows.length - 1, delimiter, error: "Header wajib Nama, Email, Password, dan Mapel Utama tidak ditemukan." };
+  }
+  const teachers: CsvTeacher[] = [];
+  const seenEmails = new Set<string>();
+  let skippedRows = 0;
+  for (const row of rows.slice(1)) {
+    const name = (row[nameIndex] ?? "").trim();
+    const email = (row[emailIndex] ?? "").trim().toLowerCase();
+    const password = (row[passwordIndex] ?? "").trim();
+    if (!name || !email || !email.includes("@") || password.length < 6 || !((row[primaryIndex] ?? "").trim()) || seenEmails.has(email)) { skippedRows += 1; continue; }
+    seenEmails.add(email);
+    teachers.push({
+      name,
+      email,
+      password,
+      primarySubjects: splitList(row[primaryIndex] ?? ""),
+      additionalSubjects: splitList(additionalIndex >= 0 ? row[additionalIndex] ?? "" : ""),
+      classNames: splitList(classIndex >= 0 ? row[classIndex] ?? "" : ""),
+    });
+  }
+  return { teachers, skippedRows, delimiter };
 }

@@ -17,6 +17,7 @@ import { createRandomizedQuiz, formatCountdown, type RandomizedQuestion } from "
 type StudentIdentity = { id: string; nis: string; name: string; className: string };
 type PublicQuizSnapshot = {
   ownerUid: string;
+  schoolId?: string;
   examId: string;
   published: boolean;
   type: "quiz";
@@ -28,6 +29,8 @@ type PublicQuizSnapshot = {
   durationMinutes: number;
   startAtMs: number;
   endAtMs: number;
+  endedAtMs?: number;
+  endedManually?: boolean;
   students: StudentIdentity[];
 };
 type QuizAttempt = {
@@ -35,6 +38,7 @@ type QuizAttempt = {
   snapshotId: string;
   examId: string;
   ownerUid: string;
+  schoolId?: string;
   studentId: string;
   nis: string;
   studentName: string;
@@ -158,6 +162,11 @@ export function PublicQuizProfessional() {
   useEffect(() => {
     if (phase === "waiting" && snapshot && clock >= snapshot.endAtMs) setPhase("result");
   }, [phase, snapshot, clock]);
+  useEffect(() => {
+    if (phase !== "quiz" || !snapshot) return;
+    const effectiveDeadline = Math.min(deadlineMs || snapshot.endAtMs, snapshot.endAtMs);
+    if (effectiveDeadline !== deadlineMs) setDeadlineMs(effectiveDeadline);
+  }, [phase, snapshot, deadlineMs]);
 
   async function enterFullscreen() {
     if (document.fullscreenElement) return true;
@@ -176,6 +185,7 @@ export function PublicQuizProfessional() {
         snapshotId,
         examId: snapshot.examId,
         ownerUid: snapshot.ownerUid,
+        ...(snapshot.schoolId ? { schoolId: snapshot.schoolId } : {}),
         studentId: match.id,
         nis: match.nis,
         sessionId,
@@ -210,11 +220,25 @@ export function PublicQuizProfessional() {
   }
 
   async function calculateAndFinish(id: string, randomized: RandomizedQuestion[], savedAnswers: Record<string, number>, startMs: number, auto: boolean) {
-    const correct = randomized.reduce((total, question, index) => total + (savedAnswers[String(index)] === question.answerIndex ? 1 : 0), 0);
-    const score = Math.round(correct / randomized.length * 100);
+    const hasAnswerKeys = randomized.some((q) => typeof q.answerIndex === "number" && q.answerIndex >= 0);
     const duration = Math.max(0, Math.min(Math.floor((Date.now() - startMs) / 1000), snapshot?.durationMinutes ? snapshot.durationMinutes * 60 : Infinity));
-    if (snapshotId !== "demo") await updateDoc(doc(db, "publicQuizAttempts", id), { status: "finished", answers: savedAnswers, correctCount: correct, score, durationSeconds: duration, finishedAt: serverTimestamp(), finishReason: auto ? "waktu_habis" : "dikirim_siswa", updatedAt: serverTimestamp() });
-    setResult({ score, correct, duration });
+    if (hasAnswerKeys || snapshotId === "demo") {
+      const correct = randomized.reduce((total, question, index) => total + (savedAnswers[String(index)] === question.answerIndex ? 1 : 0), 0);
+      const score = Math.round((correct / (randomized.length || 1)) * 100);
+      if (snapshotId !== "demo") {
+        await updateDoc(doc(db, "publicQuizAttempts", id), {
+          status: "finished", answers: savedAnswers, correctCount: correct, score, durationSeconds: duration, finishedAt: serverTimestamp(), finishReason: auto ? snapshot?.endedManually ? "ditutup_guru" : "waktu_habis" : "dikirim_siswa", updatedAt: serverTimestamp(),
+        });
+      }
+      setResult({ score, correct, duration });
+    } else {
+      if (snapshotId !== "demo") {
+        await updateDoc(doc(db, "publicQuizAttempts", id), {
+          status: "finished", answers: savedAnswers, durationSeconds: duration, finishedAt: serverTimestamp(), finishReason: auto ? snapshot?.endedManually ? "ditutup_guru" : "waktu_habis" : "dikirim_siswa", updatedAt: serverTimestamp(),
+        });
+      }
+      setResult({ score: 0, correct: 0, duration });
+    }
   }
 
   async function startQuiz() {
@@ -240,8 +264,18 @@ export function PublicQuizProfessional() {
         const data = { id, ...existing.data() } as QuizAttempt;
         let randomSeed = data.randomSeed ?? `${snapshotId}:${match.nis}`;
         let randomized = createRandomizedQuiz(snapshot.questions, randomSeed);
-        if (data.status === "finished") { applyAttempt(match, randomized, id, data); setPhase(now >= snapshot.endAtMs ? "result" : "waiting"); return; }
-        if (now >= snapshot.endAtMs) { applyAttempt(match, randomized, id, data); await calculateAndFinish(id, randomized, data.answers ?? {}, data.startedAtMs ?? now, true); setPhase("result"); return; }
+        const isExamEnded = now >= snapshot.endAtMs || Boolean(snapshot.endedManually);
+        if (data.status === "finished") {
+          applyAttempt(match, randomized, id, data);
+          setPhase(isExamEnded ? "result" : "waiting");
+          return;
+        }
+        if (isExamEnded) {
+          applyAttempt(match, randomized, id, data);
+          await calculateAndFinish(id, randomized, data.answers ?? {}, data.startedAtMs ?? now, true);
+          setPhase("result");
+          return;
+        }
         if (!await enterFullscreen()) return;
         if (!await claimDeviceLock(id, match)) return;
         if (!data.randomSeed && Object.keys(data.answers ?? {}).length === 0) {
@@ -259,7 +293,7 @@ export function PublicQuizProfessional() {
       if (!await claimDeviceLock(id, match)) return;
       const randomSeed = createAttemptRandomSeed();
       const randomized = createRandomizedQuiz(snapshot.questions, randomSeed);
-      const initial: QuizAttempt = { id, snapshotId, examId: snapshot.examId, ownerUid: snapshot.ownerUid, studentId: match.id, nis: match.nis, studentName: match.name, className: match.className, status: "active", answers: {}, violations: [], startedAtMs: now, deadlineMs: snapshot.endAtMs, reloginCount: 0, randomSeed };
+      const initial: QuizAttempt = { id, snapshotId, examId: snapshot.examId, ownerUid: snapshot.ownerUid, ...(snapshot.schoolId ? { schoolId: snapshot.schoolId } : {}), studentId: match.id, nis: match.nis, studentName: match.name, className: match.className, status: "active", answers: {}, violations: [], startedAtMs: now, deadlineMs: snapshot.endAtMs, reloginCount: 0, randomSeed };
       const { id: _localId, ...initialPayload } = initial;
       await setDoc(attemptRef, { ...initialPayload, loginEvents: [{ type: "login_awal", atMs: now }], startedAt: serverTimestamp(), updatedAt: serverTimestamp() });
       applyAttempt(match, randomized, id, initial); setPhase("quiz");
