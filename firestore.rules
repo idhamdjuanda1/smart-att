@@ -183,6 +183,10 @@ service cloud.firestore {
       allow update: if isSchoolAdmin(schoolId) || isSuperAdmin();
       allow delete: if isSchoolPrincipal(schoolId) || isSuperAdmin();
 
+      match /{subcollection}/{document=**} {
+        allow read, write: if isSuperAdmin();
+      }
+
       match /members/{memberUid} {
         allow read: if isSchoolMember(schoolId) || isSuperAdmin();
         allow create: if (
