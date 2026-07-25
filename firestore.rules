@@ -17,18 +17,18 @@ service cloud.firestore {
       return /databases/$(database)/documents/schools/$(schoolId)/members/$(uid);
     }
     function isSchoolMember(schoolId) {
-      return signedIn() &&
+      return isSuperAdmin() || (signedIn() &&
         exists(userPath(request.auth.uid)) &&
         get(userPath(request.auth.uid)).data.accountType == 'school' &&
         get(userPath(request.auth.uid)).data.schoolId == schoolId &&
         exists(schoolMemberPath(schoolId, request.auth.uid)) &&
-        get(schoolMemberPath(schoolId, request.auth.uid)).data.active == true;
+        get(schoolMemberPath(schoolId, request.auth.uid)).data.active == true);
     }
     function schoolRole(schoolId) {
       return get(schoolMemberPath(schoolId, request.auth.uid)).data.role;
     }
     function isSchoolAdmin(schoolId) {
-      return isSchoolMember(schoolId) && schoolRole(schoolId) in ['principal', 'administration'];
+      return isSuperAdmin() || (isSchoolMember(schoolId) && schoolRole(schoolId) in ['principal', 'administration']);
     }
     function isSchoolPrincipal(schoolId) {
       return isSchoolMember(schoolId) && schoolRole(schoolId) == 'principal';
