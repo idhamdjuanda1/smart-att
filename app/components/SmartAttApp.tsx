@@ -482,7 +482,19 @@ function AuthScreen({ onDemo }: { onDemo: () => void }) {
             <button type="button" onClick={() => { setMode(mode === "login" ? "register" : "login"); setError(""); }} className="font-bold text-slate-700 hover:text-teal-700">{mode === "login" ? "Daftar akun" : "Sudah punya akun"}</button>
           </div>
           <div className="my-7 flex items-center gap-3 text-xs font-bold text-slate-400"><span className="h-px flex-1 bg-slate-200" />ATAU<span className="h-px flex-1 bg-slate-200" /></div>
-          <button onClick={onDemo} className="h-12 w-full rounded-xl border border-slate-200 bg-white text-sm font-extrabold text-slate-700 shadow-sm transition hover:border-teal-300 hover:text-teal-700">Lihat demo dasbor guru</button>
+          <button
+            onClick={async () => {
+              try {
+                await signInWithEmailAndPassword(auth, "kepsek.demo@smart-att.web.id", "demo123456");
+              } catch {
+                onDemo();
+              }
+            }}
+            className="h-12 w-full rounded-xl bg-teal-600 text-sm font-extrabold text-white shadow-md transition hover:bg-teal-700"
+          >
+            🏫 Pratinjau Demo School (SMA Negeri Demo 1)
+          </button>
+          <button onClick={onDemo} className="mt-2 h-11 w-full rounded-xl border border-slate-200 bg-white text-xs font-extrabold text-slate-600 shadow-sm transition hover:border-teal-300 hover:text-teal-700">Lihat demo dasbor guru SD</button>
           <div className="mt-8 space-y-3 text-center"><p className="text-xs leading-5 text-slate-400">Dengan masuk, Anda menyetujui ketentuan layanan SMART-ATT.</p><PublicInfoLinks className="text-slate-500" /></div>
         </div>
       </section>

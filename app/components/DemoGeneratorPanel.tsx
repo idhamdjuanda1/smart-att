@@ -1,9 +1,11 @@
 "use client";
 
 import React, { useState } from "react";
+import { initializeApp, getApps } from "firebase/app";
+import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from "firebase/auth";
 import { collection, doc, getDoc, serverTimestamp, setDoc, writeBatch, WriteBatch } from "firebase/firestore";
-import { db } from "../lib/firebase";
-import { Building2, CheckCircle2, AlertCircle, Loader2, Sparkles, ShieldCheck, Users, School, BookOpen, Calendar, Clock, Award, FileText } from "lucide-react";
+import { db, firebaseConfig, auth } from "../lib/firebase";
+import { Building2, CheckCircle2, AlertCircle, Loader2, Sparkles, ShieldCheck, Users, School, BookOpen, Calendar, Clock, Award, LogIn, ExternalLink, KeyRound, RefreshCcw } from "lucide-react";
 
 export interface DemoGeneratorSummary {
   schoolName: string;
@@ -30,12 +32,136 @@ async function commitInChunks(operations: Array<(batch: WriteBatch) => void>) {
   }
 }
 
+// Secondary Auth instance for creating demo accounts without logging out current SuperAdmin
+function getSecondaryAuth() {
+  const secondaryApp = getApps().find((app) => app.name === "demoAuthApp") || initializeApp(firebaseConfig, "demoAuthApp");
+  return getAuth(secondaryApp);
+}
+
 export function DemoGeneratorPanel() {
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState("");
   const [summary, setSummary] = useState<DemoGeneratorSummary | null>(null);
   const [error, setError] = useState("");
   const [alreadyExists, setAlreadyExists] = useState(false);
+  const [authSyncSuccess, setAuthSyncSuccess] = useState(false);
+  const [loginLoading, setLoginLoading] = useState<string | null>(null);
+
+  // List of staff/teacher demo accounts
+  const teachersDef = [
+    { key: "kepsek", name: "Dr. H. Ahmad Sudirman, M.Pd", nip: "197001011995011001", gender: "L", birthPlace: "Jakarta", birthDate: "1970-01-15", address: "Jl. Melati No. 1, Jakarta", phone: "081234567801", email: "kepsek.demo@smart-att.web.id", pass: "demo123456", role: "principal", subjectName: "Manajemen Sekolah", subjectId: "" },
+    { key: "wakasek", name: "Dra. Hj. Siti Rahmawati, M.Si", nip: "197203151997022002", gender: "P", birthPlace: "Bandung", birthDate: "1972-03-20", address: "Jl. Mawar No. 2, Jakarta", phone: "081234567802", email: "wakasek.demo@smart-att.web.id", pass: "demo123456", role: "administration", subjectName: "Kurikulum", subjectId: "" },
+    { key: "tu", name: "Budi Santoso, S.Kom", nip: "198506102008011003", gender: "L", birthPlace: "Semarang", birthDate: "1985-06-10", address: "Jl. Anggrek No. 3, Jakarta", phone: "081234567803", email: "tu.demo@smart-att.web.id", pass: "demo123456", role: "administration", subjectName: "Tata Usaha", subjectId: "" },
+    { key: "bk", name: "Rina Agustina, S.Psi", nip: "198808202012022004", gender: "P", birthPlace: "Surabaya", birthDate: "1988-08-20", address: "Jl. Dahlia No. 4, Jakarta", phone: "081234567804", email: "bk.demo@smart-att.web.id", pass: "demo123456", role: "teacher", subjectName: "Bimbingan Konseling", subjectId: "subj_bk" },
+    { key: "mtk", name: "Bambang Wijaya, S.Pd", nip: "198204122006041005", gender: "L", birthPlace: "Yogyakarta", birthDate: "1982-04-12", address: "Jl. Kenanga No. 5, Jakarta", phone: "081234567805", email: "guru.mtk@smart-att.web.id", pass: "demo123456", role: "teacher", subjectName: "Matematika", subjectId: "subj_mtk", homeroomFor: "X-A" },
+    { key: "bin", name: "Dewi Lestari, M.Pd", nip: "198409152009032006", gender: "P", birthPlace: "Solo", birthDate: "1984-09-15", address: "Jl. Kamboja No. 6, Jakarta", phone: "081234567806", email: "guru.bin@smart-att.web.id", pass: "demo123456", role: "teacher", subjectName: "Bahasa Indonesia", subjectId: "subj_bin", homeroomFor: "X-B" },
+    { key: "big", name: "John Smith, M.Ed", nip: "198611252010011007", gender: "L", birthPlace: "Medan", birthDate: "1986-11-25", address: "Jl. Cempaka No. 7, Jakarta", phone: "081234567807", email: "guru.big@smart-att.web.id", pass: "demo123456", role: "teacher", subjectName: "Bahasa Inggris", subjectId: "subj_big", homeroomFor: "XII-A" },
+    { key: "ipa", name: "Ir. Hendra Prasetyo, M.T", nip: "198005182005021008", gender: "L", birthPlace: "Malang", birthDate: "1980-05-18", address: "Jl. Flamboyan No. 8, Jakarta", phone: "081234567808", email: "guru.ipa@smart-att.web.id", pass: "demo123456", role: "teacher", subjectName: "IPA", subjectId: "subj_ipa", homeroomFor: "XII-B" },
+    { key: "ips", name: "Drs. Eko Wahyudi", nip: "197802282003121009", gender: "L", birthPlace: "Bogor", birthDate: "1978-02-28", address: "Jl. Teratai No. 9, Jakarta", phone: "081234567809", email: "guru.ips@smart-att.web.id", pass: "demo123456", role: "teacher", subjectName: "IPS", subjectId: "subj_ips", homeroomFor: "XIII-A" },
+    { key: "agama", name: "H. Muhammad Ridwan, S.Ag", nip: "198107142007011010", gender: "L", birthPlace: "Cirebon", birthDate: "1981-07-14", address: "Jl. Jasmine No. 10, Jakarta", phone: "081234567810", email: "guru.agama@smart-att.web.id", pass: "demo123456", role: "teacher", subjectName: "Agama", subjectId: "subj_pabp", homeroomFor: "XIII-B" },
+    { key: "inf", name: "Arief Hidayat, S.Kom", nip: "199003102015031011", gender: "L", birthPlace: "Bandung", birthDate: "1990-03-10", address: "Jl. Tulip No. 11, Jakarta", phone: "081234567811", email: "guru.inf@smart-att.web.id", pass: "demo123456", role: "teacher", subjectName: "Informatika", subjectId: "subj_inf" },
+    { key: "pjok", name: "Doni Kusuma, S.Pd", nip: "198912052014021012", gender: "L", birthPlace: "Palembang", birthDate: "1989-12-05", address: "Jl. Sakura No. 12, Jakarta", phone: "081234567812", email: "guru.pjok@smart-att.web.id", pass: "demo123456", role: "teacher", subjectName: "PJOK", subjectId: "subj_pjok" },
+    { key: "sbd", name: "Maya Putri, S.Sn", nip: "199201182018012013", gender: "P", birthPlace: "Bali", birthDate: "1992-01-18", address: "Jl. Palm No. 13, Jakarta", phone: "081234567813", email: "guru.sbd@smart-att.web.id", pass: "demo123456", role: "teacher", subjectName: "Seni Budaya", subjectId: "subj_sbd" },
+    { key: "eko", name: "Sri Wahyuni, S.E., M.M", nip: "198310082008022014", gender: "P", birthPlace: "Surakarta", birthDate: "1983-10-08", address: "Jl. Bougainville No. 14, Jakarta", phone: "081234567814", email: "guru.eko@smart-att.web.id", pass: "demo123456", role: "teacher", subjectName: "Ekonomi", subjectId: "subj_eko" },
+  ];
+
+  // Sync / Create Firebase Auth accounts
+  async function syncAuthAccounts() {
+    setLoading(true);
+    setError("");
+    setProgress("Mendaftarkan akun login ke Firebase Authentication...");
+
+    try {
+      const secAuth = getSecondaryAuth();
+      const authMap: Record<string, string> = {};
+
+      // 1. Staff/Teachers
+      for (const t of teachersDef) {
+        try {
+          const cred = await createUserWithEmailAndPassword(secAuth, t.email, t.pass);
+          authMap[t.email] = cred.user.uid;
+          await signOut(secAuth);
+        } catch (e: any) {
+          // If user exists, fine
+        }
+      }
+
+      // 2. Students (60 students)
+      for (let i = 1; i <= 60; i++) {
+        const nis = String(20261000 + i);
+        const email = `siswa.${nis}@smart-att.web.id`;
+        try {
+          const cred = await createUserWithEmailAndPassword(secAuth, email, "siswa123456");
+          authMap[email] = cred.user.uid;
+          await signOut(secAuth);
+        } catch (e: any) {
+          // If user exists, fine
+        }
+      }
+
+      // Update Firestore users collection if UIDs were created
+      const operations: Array<(batch: WriteBatch) => void> = [];
+      const nowMs = Date.now();
+
+      for (const t of teachersDef) {
+        const uid = authMap[t.email] || `demo_user_${t.key}`;
+        operations.push((batch) => {
+          batch.set(
+            doc(db, "users", uid),
+            {
+              uid,
+              name: t.name,
+              email: t.email,
+              phone: t.phone,
+              nip: t.nip,
+              gender: t.gender,
+              birthPlace: t.birthPlace,
+              birthDate: t.birthDate,
+              address: t.address,
+              schoolName: "SMA Negeri Demo 1",
+              schoolId: DEMO_SCHOOL_ID,
+              accountType: "school",
+              schoolRole: t.role,
+              role: "teacher",
+              status: "active",
+              disabled: false,
+              defaultPassword: "demo123456",
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+
+          batch.set(
+            doc(db, "schools", DEMO_SCHOOL_ID, "members", uid),
+            {
+              uid,
+              name: t.name,
+              email: t.email,
+              phone: t.phone,
+              nip: t.nip,
+              gender: t.gender,
+              role: t.role,
+              active: true,
+              subjectIds: t.subjectId ? [t.subjectId] : [],
+              primarySubjectIds: t.subjectId ? [t.subjectId] : [],
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+        });
+      }
+
+      await commitInChunks(operations);
+      setAuthSyncSuccess(true);
+      setProgress("");
+      setLoading(false);
+    } catch (err: any) {
+      console.error("Error syncing auth accounts:", err);
+      setError(err?.message || "Gagal sinkronisasi akun login Firebase Auth.");
+      setLoading(false);
+      setProgress("");
+    }
+  }
 
   async function handleGenerateDemoSchool() {
     setLoading(true);
@@ -45,21 +171,52 @@ export function DemoGeneratorPanel() {
     setProgress("Memeriksa status sekolah demo...");
 
     try {
-      // 1. Check if demo school already exists
+      // Check if demo school already exists
       const schoolRef = doc(db, "schools", DEMO_SCHOOL_ID);
       const existingSnap = await getDoc(schoolRef);
 
       if (existingSnap.exists()) {
         setAlreadyExists(true);
+        // Also run auth sync in case auth users were missing
+        await syncAuthAccounts();
         setLoading(false);
         return;
+      }
+
+      // First sync/create Firebase Auth accounts
+      setProgress("Membuat akun autentikasi Firebase...");
+      const secAuth = getSecondaryAuth();
+      const authUidMap: Record<string, string> = {};
+
+      for (const t of teachersDef) {
+        try {
+          const cred = await createUserWithEmailAndPassword(secAuth, t.email, t.pass);
+          authUidMap[t.email] = cred.user.uid;
+          await signOut(secAuth);
+        } catch {
+          authUidMap[t.email] = `demo_user_${t.key}`;
+        }
+      }
+
+      for (let i = 1; i <= 60; i++) {
+        const nis = String(20261000 + i);
+        const email = `siswa.${nis}@smart-att.web.id`;
+        try {
+          const cred = await createUserWithEmailAndPassword(secAuth, email, "siswa123456");
+          authUidMap[email] = cred.user.uid;
+          await signOut(secAuth);
+        } catch {
+          authUidMap[email] = `demo_std_${i}`;
+        }
       }
 
       const operations: Array<(batch: WriteBatch) => void> = [];
       const nowMs = Date.now();
 
-      // 2. School Profile
+      // School Profile
       setProgress("Menyiapkan profil sekolah & pengaturan akademik...");
+      const kepsekUid = authUidMap["kepsek.demo@smart-att.web.id"] || "demo_user_kepsek";
+
       operations.push((batch) => {
         batch.set(schoolRef, {
           id: DEMO_SCHOOL_ID,
@@ -71,7 +228,7 @@ export function DemoGeneratorPanel() {
           phone: "021-5551234",
           email: "demo.sma1@smart-att.web.id",
           cardDeliveryEmail: "demo.sma1@smart-att.web.id",
-          ownerUid: "demo_user_kepsek",
+          ownerUid: kepsekUid,
           status: "active",
           isDemo: true,
           createdAtMs: nowMs,
@@ -92,30 +249,14 @@ export function DemoGeneratorPanel() {
         });
       });
 
-      // 3. Teachers & Staff (14 Accounts)
+      // Teachers & Staff (14 Accounts)
       setProgress("Membuat data 14 guru & staf sekolah...");
-      const teachersList = [
-        { uid: "demo_user_kepsek", name: "Dr. H. Ahmad Sudirman, M.Pd", nip: "197001011995011001", gender: "L", birthPlace: "Jakarta", birthDate: "1970-01-15", address: "Jl. Melati No. 1, Jakarta", phone: "081234567801", email: "kepsek.demo@smart-att.web.id", role: "principal", subjectName: "Manajemen Sekolah", subjectId: "" },
-        { uid: "demo_user_wakasek", name: "Dra. Hj. Siti Rahmawati, M.Si", nip: "197203151997022002", gender: "P", birthPlace: "Bandung", birthDate: "1972-03-20", address: "Jl. Mawar No. 2, Jakarta", phone: "081234567802", email: "wakasek.demo@smart-att.web.id", role: "administration", subjectName: "Kurikulum", subjectId: "" },
-        { uid: "demo_user_tu", name: "Budi Santoso, S.Kom", nip: "198506102008011003", gender: "L", birthPlace: "Semarang", birthDate: "1985-06-10", address: "Jl. Anggrek No. 3, Jakarta", phone: "081234567803", email: "tu.demo@smart-att.web.id", role: "administration", subjectName: "Tata Usaha", subjectId: "" },
-        { uid: "demo_user_bk", name: "Rina Agustina, S.Psi", nip: "198808202012022004", gender: "P", birthPlace: "Surabaya", birthDate: "1988-08-20", address: "Jl. Dahlia No. 4, Jakarta", phone: "081234567804", email: "bk.demo@smart-att.web.id", role: "teacher", subjectName: "Bimbingan Konseling", subjectId: "subj_bk" },
-        { uid: "demo_user_mtk", name: "Bambang Wijaya, S.Pd", nip: "198204122006041005", gender: "L", birthPlace: "Yogyakarta", birthDate: "1982-04-12", address: "Jl. Kenanga No. 5, Jakarta", phone: "081234567805", email: "guru.mtk@smart-att.web.id", role: "teacher", subjectName: "Matematika", subjectId: "subj_mtk", homeroomFor: "X-A" },
-        { uid: "demo_user_bin", name: "Dewi Lestari, M.Pd", nip: "198409152009032006", gender: "P", birthPlace: "Solo", birthDate: "1984-09-15", address: "Jl. Kamboja No. 6, Jakarta", phone: "081234567806", email: "guru.bin@smart-att.web.id", role: "teacher", subjectName: "Bahasa Indonesia", subjectId: "subj_bin", homeroomFor: "X-B" },
-        { uid: "demo_user_big", name: "John Smith, M.Ed", nip: "198611252010011007", gender: "L", birthPlace: "Medan", birthDate: "1986-11-25", address: "Jl. Cempaka No. 7, Jakarta", phone: "081234567807", email: "guru.big@smart-att.web.id", role: "teacher", subjectName: "Bahasa Inggris", subjectId: "subj_big", homeroomFor: "XII-A" },
-        { uid: "demo_user_ipa", name: "Ir. Hendra Prasetyo, M.T", nip: "198005182005021008", gender: "L", birthPlace: "Malang", birthDate: "1980-05-18", address: "Jl. Flamboyan No. 8, Jakarta", phone: "081234567808", email: "guru.ipa@smart-att.web.id", role: "teacher", subjectName: "IPA", subjectId: "subj_ipa", homeroomFor: "XII-B" },
-        { uid: "demo_user_ips", name: "Drs. Eko Wahyudi", nip: "197802282003121009", gender: "L", birthPlace: "Bogor", birthDate: "1978-02-28", address: "Jl. Teratai No. 9, Jakarta", phone: "081234567809", email: "guru.ips@smart-att.web.id", role: "teacher", subjectName: "IPS", subjectId: "subj_ips", homeroomFor: "XIII-A" },
-        { uid: "demo_user_agama", name: "H. Muhammad Ridwan, S.Ag", nip: "198107142007011010", gender: "L", birthPlace: "Cirebon", birthDate: "1981-07-14", address: "Jl. Jasmine No. 10, Jakarta", phone: "081234567810", email: "guru.agama@smart-att.web.id", role: "teacher", subjectName: "Agama", subjectId: "subj_pabp", homeroomFor: "XIII-B" },
-        { uid: "demo_user_inf", name: "Arief Hidayat, S.Kom", nip: "199003102015031011", gender: "L", birthPlace: "Bandung", birthDate: "1990-03-10", address: "Jl. Tulip No. 11, Jakarta", phone: "081234567811", email: "guru.inf@smart-att.web.id", role: "teacher", subjectName: "Informatika", subjectId: "subj_inf" },
-        { uid: "demo_user_pjok", name: "Doni Kusuma, S.Pd", nip: "198912052014021012", gender: "L", birthPlace: "Palembang", birthDate: "1989-12-05", address: "Jl. Sakura No. 12, Jakarta", phone: "081234567812", email: "guru.pjok@smart-att.web.id", role: "teacher", subjectName: "PJOK", subjectId: "subj_pjok" },
-        { uid: "demo_user_sbd", name: "Maya Putri, S.Sn", nip: "199201182018012013", gender: "P", birthPlace: "Bali", birthDate: "1992-01-18", address: "Jl. Palm No. 13, Jakarta", phone: "081234567813", email: "guru.sbd@smart-att.web.id", role: "teacher", subjectName: "Seni Budaya", subjectId: "subj_sbd" },
-        { uid: "demo_user_eko", name: "Sri Wahyuni, S.E., M.M", nip: "198310082008022014", gender: "P", birthPlace: "Surakarta", birthDate: "1983-10-08", address: "Jl. Bougainville No. 14, Jakarta", phone: "081234567814", email: "guru.eko@smart-att.web.id", role: "teacher", subjectName: "Ekonomi", subjectId: "subj_eko" },
-      ];
-
-      for (const t of teachersList) {
+      for (const t of teachersDef) {
+        const uid = authUidMap[t.email] || `demo_user_${t.key}`;
         // user doc
         operations.push((batch) => {
-          batch.set(doc(db, "users", t.uid), {
-            uid: t.uid,
+          batch.set(doc(db, "users", uid), {
+            uid,
             name: t.name,
             email: t.email,
             phone: t.phone,
@@ -138,8 +279,8 @@ export function DemoGeneratorPanel() {
         });
         // member doc
         operations.push((batch) => {
-          batch.set(doc(db, "schools", DEMO_SCHOOL_ID, "members", t.uid), {
-            uid: t.uid,
+          batch.set(doc(db, "schools", DEMO_SCHOOL_ID, "members", uid), {
+            uid,
             name: t.name,
             email: t.email,
             phone: t.phone,
@@ -155,7 +296,7 @@ export function DemoGeneratorPanel() {
         });
       }
 
-      // 4. Subjects (11 Subjects)
+      // Subjects (11 Subjects)
       setProgress("Membuat 11 mata pelajaran...");
       const subjectsList = [
         { id: "subj_mtk", name: "Matematika", code: "MTK", jp: 4 },
@@ -186,24 +327,25 @@ export function DemoGeneratorPanel() {
         });
       }
 
-      // 5. Classes (6 Classes)
+      // Classes (6 Classes)
       setProgress("Membuat 6 kelas & menghubungkan wali kelas...");
       const classesList = [
-        { id: "class_x_a", name: "X-A", grade: "X", teacherUid: "demo_user_mtk" },
-        { id: "class_x_b", name: "X-B", grade: "X", teacherUid: "demo_user_bin" },
-        { id: "class_xii_a", name: "XII-A", grade: "XII", teacherUid: "demo_user_big" },
-        { id: "class_xii_b", name: "XII-B", grade: "XII", teacherUid: "demo_user_ipa" },
-        { id: "class_xiii_a", name: "XIII-A", grade: "XIII", teacherUid: "demo_user_ips" },
-        { id: "class_xiii_b", name: "XIII-B", grade: "XIII", teacherUid: "demo_user_agama" },
+        { id: "class_x_a", name: "X-A", grade: "X", teacherKey: "mtk" },
+        { id: "class_x_b", name: "X-B", grade: "X", teacherKey: "bin" },
+        { id: "class_xii_a", name: "XII-A", grade: "XII", teacherKey: "big" },
+        { id: "class_xii_b", name: "XII-B", grade: "XII", teacherKey: "ipa" },
+        { id: "class_xiii_a", name: "XIII-A", grade: "XIII", teacherKey: "ips" },
+        { id: "class_xiii_b", name: "XIII-B", grade: "XIII", teacherKey: "agama" },
       ];
 
       for (const c of classesList) {
+        const teacherUid = authUidMap[teachersDef.find((t) => t.key === c.teacherKey)?.email || ""] || `demo_user_${c.teacherKey}`;
         operations.push((batch) => {
           batch.set(doc(db, "schools", DEMO_SCHOOL_ID, "classes", c.id), {
             id: c.id,
             name: c.name,
             grade: c.grade,
-            homeroomTeacherUid: c.teacherUid,
+            homeroomTeacherUid: teacherUid,
             createdAtMs: nowMs,
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
@@ -211,7 +353,7 @@ export function DemoGeneratorPanel() {
         });
       }
 
-      // 6. Students (60 Students)
+      // Students (60 Students)
       setProgress("Membuat data 60 siswa (10 siswa per kelas)...");
       const firstNames = ["Aditya", "Bunga", "Cakra", "Diva", "Eko", "Fani", "Gilang", "Hana", "Indra", "Jihan", "Kiki", "Lestari", "Mahendra", "Nabila", "Oky", "Putri", "Qoni", "Rian", "Sari", "Taufik"];
       const lastNames = ["Pratama", "Wijaya", "Kusuma", "Santoso", "Saputra", "Lestari", "Nugroho", "Wahyudi", "Rahmawati", "Hidayat", "Utami", "Suryono", "Handayani", "Wibowo", "Permata"];
@@ -223,8 +365,9 @@ export function DemoGeneratorPanel() {
 
       for (const c of classesList) {
         for (let i = 1; i <= 10; i++) {
-          const studentId = `demo_std_${studentCounter}`;
           const nis = String(20261000 + studentCounter);
+          const email = `siswa.${nis}@smart-att.web.id`;
+          const studentId = authUidMap[email] || `demo_std_${studentCounter}`;
           const nisn = String(810000000 + studentCounter);
           const fn = firstNames[(studentCounter - 1) % firstNames.length];
           const ln = lastNames[(studentCounter - 1) % lastNames.length];
@@ -233,13 +376,12 @@ export function DemoGeneratorPanel() {
           const birthCity = cities[(studentCounter - 1) % cities.length];
           const religion = religions[(studentCounter - 1) % religions.length];
           const phone = `081299${String(1000 + studentCounter).padStart(4, "0")}`;
-          const email = `siswa.${nis}@smart-att.web.id`;
 
           const studentData = {
             id: studentId,
             name: fullName,
-            nis: nis,
-            nisn: nisn,
+            nis,
+            nisn,
             gender,
             birthPlace: birthCity,
             birthDate: "2009-06-15",
@@ -270,38 +412,12 @@ export function DemoGeneratorPanel() {
         }
       }
 
-      // 7. Teaching Assignments & Schedules
-      setProgress("Menyusun penugasan mengajar & jadwal bebas bentrok...");
-      const dayNames = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat"];
-      const times = [
-        { start: "07:00", end: "07:45" },
-        { start: "07:45", end: "08:30" },
-        { start: "08:30", end: "09:15" },
-        { start: "09:30", end: "10:15" },
-        { start: "10:15", end: "11:00" },
-        { start: "11:00", end: "11:45" },
-      ];
-
-      // Assign subjects to teachers
-      const teacherSubjectMap: Record<string, string> = {
-        subj_mtk: "demo_user_mtk",
-        subj_bin: "demo_user_bin",
-        subj_big: "demo_user_big",
-        subj_ipa: "demo_user_ipa",
-        subj_ips: "demo_user_ips",
-        subj_inf: "demo_user_inf",
-        subj_pabp: "demo_user_agama",
-        subj_pjok: "demo_user_pjok",
-        subj_sbd: "demo_user_sbd",
-        subj_eko: "demo_user_eko",
-        subj_ppkn: "demo_user_bk",
-      };
-
-      // Create teaching assignments
-      let assignmentIndex = 1;
+      // Teaching Assignments & Schedules
+      setProgress("Menyusun penugasan mengajar & jadwal...");
       for (const c of classesList) {
         for (const subj of subjectsList) {
-          const teacherUid = teacherSubjectMap[subj.id] || "demo_user_mtk";
+          const teacherDef = teachersDef.find((t) => t.subjectId === subj.id) || teachersDef[4];
+          const teacherUid = authUidMap[teacherDef.email] || `demo_user_${teacherDef.key}`;
           const assignId = `assign_${c.id}_${subj.id}`;
           operations.push((batch) => {
             batch.set(doc(db, "schools", DEMO_SCHOOL_ID, "teachingAssignments", assignId), {
@@ -315,11 +431,20 @@ export function DemoGeneratorPanel() {
               createdAt: serverTimestamp(),
             });
           });
-          assignmentIndex++;
         }
       }
 
-      // Schedule grid creation without conflicts
+      // Schedule grid creation
+      const dayNames = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat"];
+      const times = [
+        { start: "07:00", end: "07:45" },
+        { start: "07:45", end: "08:30" },
+        { start: "08:30", end: "09:15" },
+        { start: "09:30", end: "10:15" },
+        { start: "10:15", end: "11:00" },
+        { start: "11:00", end: "11:45" },
+      ];
+
       let scheduleCount = 0;
       for (let dayIdx = 0; dayIdx < dayNames.length; dayIdx++) {
         const day = dayNames[dayIdx];
@@ -328,10 +453,10 @@ export function DemoGeneratorPanel() {
 
           for (let classIdx = 0; classIdx < classesList.length; classIdx++) {
             const c = classesList[classIdx];
-            // Rotate subject per class and period deterministically to prevent teacher/class overlap
             const subjIdx = (dayIdx * 6 + periodIdx + classIdx) % subjectsList.length;
             const subj = subjectsList[subjIdx];
-            const teacherUid = teacherSubjectMap[subj.id] || "demo_user_mtk";
+            const teacherDef = teachersDef.find((t) => t.subjectId === subj.id) || teachersDef[4];
+            const teacherUid = authUidMap[teacherDef.email] || `demo_user_${teacherDef.key}`;
             const schedId = `sched_${c.id}_d${dayIdx}_p${periodIdx}`;
 
             operations.push((batch) => {
@@ -353,16 +478,15 @@ export function DemoGeneratorPanel() {
         }
       }
 
-      // 8. Attendance Generation (30 Days)
-      setProgress("Generating absensi 30 hari (92% Hadir, 3% Izin, 3% Sakit, 2% Alpha)...");
+      // Attendance Generation (30 Days)
+      setProgress("Generating absensi 30 hari...");
       let attendanceSessionCount = 0;
       const today = new Date();
 
       for (let d = 29; d >= 0; d--) {
         const dateObj = new Date(today);
         dateObj.setDate(today.getDate() - d);
-        // Skip Sundays
-        if (dateObj.getDay() === 0) continue;
+        if (dateObj.getDay() === 0) continue; // Skip Sunday
 
         const dateStr = dateObj.toISOString().slice(0, 10);
         const dayStartMs = dateObj.getTime();
@@ -372,20 +496,14 @@ export function DemoGeneratorPanel() {
           const records: Record<string, any> = {};
 
           classStudents.forEach((student, idx) => {
-            // Roll percentage: 1..100
-            // 1..92 => present (92%)
-            // 93..95 => permission (3%)
-            // 96..98 => sick (3%)
-            // 99..100 => alpha (2%)
             const roll = ((d * 60 + idx * 7 + 13) % 100) + 1;
-
             if (roll <= 92) {
               records[student.id] = {
                 studentId: student.id,
                 status: "present",
                 source: "qr",
                 recordedAtMs: dayStartMs + (7 * 3600 + idx * 45) * 1000,
-                late: roll > 88, // slight late
+                late: roll > 88,
               };
             } else if (roll <= 95) {
               records[student.id] = {
@@ -404,7 +522,6 @@ export function DemoGeneratorPanel() {
                 recordedAtMs: dayStartMs + 7 * 3600 * 1000,
               };
             }
-            // 99..100 => alpha (no record entry)
           });
 
           const sessionId = `att_${c.id}_${dateStr}`;
@@ -426,8 +543,8 @@ export function DemoGeneratorPanel() {
         }
       }
 
-      // 9. Manual Grades (Tugas, Kuis, UTS, UAS)
-      setProgress("Generating nilai siswa (Tugas, Kuis, UTS, UAS)...");
+      // Manual Grades
+      setProgress("Generating nilai siswa...");
       let gradeCount = 0;
       const gradeCategories = [
         { key: "assignment", name: "Tugas 1 (Bab 1-2)", type: "Tugas" },
@@ -439,8 +556,7 @@ export function DemoGeneratorPanel() {
       for (const student of allStudentDocs) {
         for (const subj of subjectsList) {
           for (const cat of gradeCategories) {
-            // Seed score between 65 and 100 deterministically
-            const score = 65 + Math.floor(((student.nis.charCodeAt(7) * 11 + subj.id.length * 7 + cat.key.length * 5) % 36));
+            const score = 65 + Math.floor((student.nis.charCodeAt(7) * 11 + subj.id.length * 7 + cat.key.length * 5) % 36);
             const gradeId = `grade_${student.id}_${subj.id}_${cat.key}`;
 
             operations.push((batch) => {
@@ -466,15 +582,15 @@ export function DemoGeneratorPanel() {
         }
       }
 
-      // 10. Commit all operations to Firestore in chunks
+      // Commit to Firestore
       setProgress("Menyimpan seluruh data ke Firestore Database...");
       await commitInChunks(operations);
 
-      const totalAccounts = 1 + teachersList.length + allStudentDocs.length; // 1 SuperAdmin + 14 staff + 60 students
+      const totalAccounts = 1 + teachersDef.length + allStudentDocs.length;
 
       setSummary({
         schoolName: "SMA Negeri Demo 1",
-        teacherCount: teachersList.length,
+        teacherCount: teachersDef.length,
         studentCount: allStudentDocs.length,
         classCount: classesList.length,
         subjectCount: subjectsList.length,
@@ -491,6 +607,21 @@ export function DemoGeneratorPanel() {
       setError(err?.message || "Terjadi kesalahan saat generate data demo sekolah.");
       setLoading(false);
       setProgress("");
+    }
+  }
+
+  // 1-Click Login function to log in as demo account
+  async function loginAsDemoAccount(email: string, pass: string, label: string) {
+    setLoginLoading(label);
+    setError("");
+    try {
+      await signInWithEmailAndPassword(auth, email, pass);
+      window.location.assign("/");
+    } catch (e: any) {
+      console.error("Login failed:", e);
+      setError(`Gagal login sebagai ${label}: ${e?.message || "Periksa koneksi internet."}`);
+    } finally {
+      setLoginLoading(null);
     }
   }
 
@@ -514,10 +645,26 @@ export function DemoGeneratorPanel() {
 
         {alreadyExists && (
           <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4">
-            <div className="flex items-center gap-3 text-amber-800 font-extrabold text-sm">
-              <AlertCircle size={20} className="text-amber-600 shrink-0" />
-              <span>Data Sekolah Demo (SMA Negeri Demo 1) sudah pernah dibuat! Proses dibatalkan untuk mencegah duplikasi.</span>
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3 text-amber-800 font-extrabold text-sm">
+                <AlertCircle size={20} className="text-amber-600 shrink-0" />
+                <span>Data Sekolah Demo (SMA Negeri Demo 1) sudah ada di Firestore.</span>
+              </div>
+              <button
+                disabled={loading}
+                onClick={syncAuthAccounts}
+                className="flex items-center gap-2 rounded-xl bg-amber-600 px-4 py-2 text-xs font-black text-white hover:bg-amber-700 disabled:opacity-50"
+              >
+                {loading ? <Loader2 className="animate-spin" size={14} /> : <RefreshCcw size={14} />}
+                Sync Akun Firebase Auth
+              </button>
             </div>
+          </div>
+        )}
+
+        {authSyncSuccess && (
+          <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs font-extrabold text-emerald-800">
+            ✅ Seluruh akun login sekolah demo telah disinkronkan dengan Firebase Authentication!
           </div>
         )}
 
@@ -574,19 +721,69 @@ export function DemoGeneratorPanel() {
                 </div>
               ))}
             </div>
-
-            <div className="mt-6 rounded-2xl bg-white p-4 border border-emerald-200">
-              <p className="text-xs font-black text-slate-800">🔑 Informasi Akun Login Demo:</p>
-              <div className="mt-2 text-xs text-slate-600 space-y-1">
-                <p>• <b>Kepala Sekolah:</b> <code>kepsek.demo@smart-att.web.id</code> (Pass: <code>demo123456</code>)</p>
-                <p>• <b>Wakil Kepala Sekolah:</b> <code>wakasek.demo@smart-att.web.id</code> (Pass: <code>demo123456</code>)</p>
-                <p>• <b>Tata Usaha:</b> <code>tu.demo@smart-att.web.id</code> (Pass: <code>demo123456</code>)</p>
-                <p>• <b>Guru Mapel (misal MTK):</b> <code>guru.mtk@smart-att.web.id</code> (Pass: <code>demo123456</code>)</p>
-                <p>• <b>Siswa (NIS 20261001):</b> <code>siswa.20261001@smart-att.web.id</code> (Pass: <code>siswa123456</code>)</p>
-              </div>
-            </div>
           </div>
         )}
+
+        {/* 1-Click Login Section */}
+        <div className="mt-6 rounded-3xl border border-teal-100 bg-slate-900 p-6 text-white shadow-xl">
+          <div className="flex items-center gap-2 text-teal-400">
+            <KeyRound size={20} />
+            <h3 className="text-base font-black">1-Click Login — Pratinjau Workspace SMA Negeri Demo 1</h3>
+          </div>
+          <p className="mt-1 text-xs text-slate-300">
+            Klik tombol di bawah ini untuk langsung masuk dan melihat hasil data demo sekolah dari sudut pandang masing-masing role:
+          </p>
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <button
+              disabled={Boolean(loginLoading)}
+              onClick={() => loginAsDemoAccount("kepsek.demo@smart-att.web.id", "demo123456", "Kepala Sekolah")}
+              className="flex items-center justify-between rounded-xl bg-teal-600 p-3.5 text-left text-xs font-black text-white hover:bg-teal-500 disabled:opacity-50"
+            >
+              <div>
+                <p className="font-extrabold">Kepala Sekolah</p>
+                <p className="text-[10px] text-teal-200 font-normal">kepsek.demo@smart-att.web.id</p>
+              </div>
+              {loginLoading === "Kepala Sekolah" ? <Loader2 className="animate-spin" size={16} /> : <LogIn size={16} />}
+            </button>
+
+            <button
+              disabled={Boolean(loginLoading)}
+              onClick={() => loginAsDemoAccount("tu.demo@smart-att.web.id", "demo123456", "Tata Usaha")}
+              className="flex items-center justify-between rounded-xl bg-indigo-600 p-3.5 text-left text-xs font-black text-white hover:bg-indigo-500 disabled:opacity-50"
+            >
+              <div>
+                <p className="font-extrabold">Tata Usaha (TU)</p>
+                <p className="text-[10px] text-indigo-200 font-normal">tu.demo@smart-att.web.id</p>
+              </div>
+              {loginLoading === "Tata Usaha" ? <Loader2 className="animate-spin" size={16} /> : <LogIn size={16} />}
+            </button>
+
+            <button
+              disabled={Boolean(loginLoading)}
+              onClick={() => loginAsDemoAccount("guru.mtk@smart-att.web.id", "demo123456", "Guru MTK")}
+              className="flex items-center justify-between rounded-xl bg-sky-600 p-3.5 text-left text-xs font-black text-white hover:bg-sky-500 disabled:opacity-50"
+            >
+              <div>
+                <p className="font-extrabold">Guru MTK (Wali X-A)</p>
+                <p className="text-[10px] text-sky-200 font-normal">guru.mtk@smart-att.web.id</p>
+              </div>
+              {loginLoading === "Guru MTK" ? <Loader2 className="animate-spin" size={16} /> : <LogIn size={16} />}
+            </button>
+
+            <button
+              disabled={Boolean(loginLoading)}
+              onClick={() => loginAsDemoAccount("siswa.20261001@smart-att.web.id", "siswa123456", "Siswa NIS 20261001")}
+              className="flex items-center justify-between rounded-xl bg-emerald-600 p-3.5 text-left text-xs font-black text-white hover:bg-emerald-500 disabled:opacity-50"
+            >
+              <div>
+                <p className="font-extrabold">Siswa (NIS 20261001)</p>
+                <p className="text-[10px] text-emerald-200 font-normal">siswa.20261001@smart-att.web.id</p>
+              </div>
+              {loginLoading === "Siswa NIS 20261001" ? <Loader2 className="animate-spin" size={16} /> : <LogIn size={16} />}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
