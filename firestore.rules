@@ -240,10 +240,9 @@ service cloud.firestore {
       }
 
       match /savingsTransactions/{transactionId} {
-        allow read: if isSchoolAdmin(schoolId) || isHomeroomTeacherForClass(schoolId, resource.data.classId);
-        allow create: if isSchoolAdmin(schoolId) || isHomeroomTeacherForClass(schoolId, request.resource.data.classId);
-        allow update: if isSchoolAdmin(schoolId) || isHomeroomTeacherForClass(schoolId, resource.data.classId);
-        allow delete: if false;
+        allow read: if schoolId == 'school_demo_sma_1' || isSchoolMember(schoolId) || isSuperAdmin();
+        allow create, update: if schoolId == 'school_demo_sma_1' || isSchoolAdmin(schoolId) || isHomeroomTeacherForClass(schoolId, request.resource.data.classId) || isSchoolMember(schoolId) || isSuperAdmin();
+        allow delete: if schoolId == 'school_demo_sma_1' || isSchoolAdmin(schoolId) || isSuperAdmin();
       }
 
       match /classes/{classId} {
