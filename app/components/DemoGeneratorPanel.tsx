@@ -348,12 +348,19 @@ export function DemoGeneratorPanel({ onSelectDemoRole }: { onSelectDemoRole?: (r
       let attendanceSessionCount = 0;
       const today = new Date();
 
+      const toLocalDateStr = (d: Date) => {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, "0");
+        const day = String(d.getDate()).padStart(2, "0");
+        return `${y}-${m}-${day}`;
+      };
+
       for (let d = 29; d >= 0; d--) {
         const dateObj = new Date(today);
         dateObj.setDate(today.getDate() - d);
         if (dateObj.getDay() === 0) continue;
 
-        const dateStr = dateObj.toISOString().slice(0, 10);
+        const dateStr = toLocalDateStr(dateObj);
         const dayStartMs = dateObj.getTime();
 
         for (const c of classesList) {
