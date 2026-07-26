@@ -377,7 +377,7 @@ function ToastMessage({ toast }: { toast: Toast }) {
   );
 }
 
-function AuthScreen() {
+function AuthScreen({ onDemo }: { onDemo: () => void }) {
   const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -481,6 +481,7 @@ function AuthScreen() {
             <button type="button" onClick={resetPassword} className="font-bold text-teal-700 hover:underline">Lupa password?</button>
             <button type="button" onClick={() => { setMode(mode === "login" ? "register" : "login"); setError(""); }} className="font-bold text-slate-700 hover:text-teal-700">{mode === "login" ? "Daftar akun" : "Sudah punya akun"}</button>
           </div>
+          <button onClick={onDemo} className="mt-4 h-11 w-full rounded-xl border border-slate-200 bg-white text-xs font-extrabold text-slate-600 shadow-sm transition hover:border-teal-300 hover:text-teal-700">Lihat demo dasbor guru SD</button>
           <div className="mt-8 space-y-3 text-center"><p className="text-xs leading-5 text-slate-400">Dengan masuk, Anda menyetujui ketentuan layanan SMART-ATT.</p><PublicInfoLinks className="text-slate-500" /></div>
         </div>
       </section>
@@ -806,7 +807,7 @@ function SmartAttApp() {
   if (pathname.startsWith("/public/guardian")) return <GuardianDataForm />;
   if (pathname.startsWith("/public/teacher-register")) return <PublicTeacherRegistration />;
   if (!authReady) return <div className="grid min-h-screen place-items-center bg-slate-50"><div className="text-center"><img src="/logo.png" alt="SMART-ATT" className="mx-auto h-20 w-20 animate-pulse rounded-3xl object-cover" /><p className="mt-4 text-sm font-bold text-slate-500">Menyiapkan SMART-ATT...</p></div></div>;
-  if (!user && !demo) return <AuthScreen />;
+  if (!user && !demo) return <AuthScreen onDemo={() => setDemo(true)} />;
   const isSuperAdmin = user?.email?.toLowerCase() === SUPERADMIN_EMAIL;
   if (isSuperAdmin && (pathname === "/" || pathname.startsWith("/superadmin"))) return <SuperAdminProfessional user={user!} onLogout={async () => { if (user) await signOut(auth); setDemo(false); window.location.assign("/"); }} />;
   if (pathname.startsWith("/superadmin")) return <SuperAdminDenied onLogout={async () => { if (user) await signOut(auth); setDemo(false); window.location.assign("/"); }} />;
