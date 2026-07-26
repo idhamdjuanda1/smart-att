@@ -179,13 +179,12 @@ service cloud.firestore {
         getAfter(userPath(request.auth.uid)).data.accountType == 'school' &&
         getAfter(userPath(request.auth.uid)).data.schoolId == schoolId &&
         getAfter(userPath(request.auth.uid)).data.schoolRole in ['principal', 'administration']);
-      allow read: if schoolId == 'school_demo_sma_1' || isSchoolMember(schoolId) || isSuperAdmin();
+      allow read: if isSchoolMember(schoolId) || isSuperAdmin();
       allow update: if isSchoolAdmin(schoolId) || isSuperAdmin();
       allow delete: if isSchoolPrincipal(schoolId) || isSuperAdmin();
 
       match /{subcollection}/{document=**} {
-        allow read: if schoolId == 'school_demo_sma_1' || isSuperAdmin();
-        allow write: if isSuperAdmin();
+        allow read, write: if isSuperAdmin();
       }
 
       match /members/{memberUid} {
@@ -240,9 +239,9 @@ service cloud.firestore {
       }
 
       match /savingsTransactions/{transactionId} {
-        allow read: if schoolId == 'school_demo_sma_1' || isSchoolMember(schoolId) || isSuperAdmin();
-        allow create, update: if schoolId == 'school_demo_sma_1' || isSchoolAdmin(schoolId) || isHomeroomTeacherForClass(schoolId, request.resource.data.classId) || isSchoolMember(schoolId) || isSuperAdmin();
-        allow delete: if schoolId == 'school_demo_sma_1' || isSchoolAdmin(schoolId) || isSuperAdmin();
+        allow read: if isSchoolMember(schoolId) || isSuperAdmin();
+        allow create, update: if isSchoolAdmin(schoolId) || isHomeroomTeacherForClass(schoolId, request.resource.data.classId) || isSchoolMember(schoolId) || isSuperAdmin();
+        allow delete: if isSchoolAdmin(schoolId) || isSuperAdmin();
       }
 
       match /classes/{classId} {
@@ -367,9 +366,9 @@ service cloud.firestore {
       }
     }
 
-    // CollectionGroup query rule for SuperAdmin to count all students & demo school
+    // CollectionGroup query rule for SuperAdmin to count all students
     match /{path=**}/students/{studentId} {
-      allow read: if isSuperAdmin() || resource.data.schoolId == 'school_demo_sma_1';
+      allow read: if isSuperAdmin();
     }
 
     match /activationTokens/{tokenId} {

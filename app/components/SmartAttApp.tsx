@@ -377,7 +377,7 @@ function ToastMessage({ toast }: { toast: Toast }) {
   );
 }
 
-function AuthScreen({ onDemo, onSelectDemoRole }: { onDemo: () => void; onSelectDemoRole?: (role: "principal" | "administration" | "teacher") => void }) {
+function AuthScreen({ onDemo }: { onDemo: () => void }) {
   const [mode, setMode] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -640,20 +640,7 @@ function SmartAttApp() {
   const [accountProfile, setAccountProfile] = useState({ name: "", schoolName: "", schoolLevel: "SMP" as "SD" | "SMP" | "SMA" | "SMK" });
   const [accountClock, setAccountClock] = useState(Date.now());
   const [showVerificationError, setShowVerificationError] = useState(false);
-  const [demoSchoolRole, setDemoSchoolRole] = useState<"principal" | "administration" | "teacher" | null>(null);
   const processingGuardianResponsesRef = useRef<Record<string, boolean>>({});
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const params = new URLSearchParams(window.location.search);
-    const demoRoleParam = params.get("demoRole") || params.get("demo");
-    if (demoRoleParam) {
-      const lower = demoRoleParam.toLowerCase();
-      if (lower === "kepsek" || lower === "principal") setDemoSchoolRole("principal");
-      else if (lower === "tu" || lower === "admin" || lower === "administration") setDemoSchoolRole("administration");
-      else if (lower === "guru" || lower === "teacher" || lower === "mtk") setDemoSchoolRole("teacher");
-    }
-  }, []);
 
   useEffect(() => {
     let authSettled = false;
@@ -832,50 +819,10 @@ function SmartAttApp() {
   if (pathname.startsWith("/public/guardian-data")) return <GuardianDataForm />;
   if (pathname.startsWith("/public/guardian")) return <GuardianDataForm />;
   if (pathname.startsWith("/public/teacher-register")) return <PublicTeacherRegistration />;
-  if (pathname.startsWith("/public/savings")) return <PublicSavingsPortal />;
-  if (demoSchoolRole) {
-    const demoAccess: AccountAccessProfile = {
-      accountType: "school",
-      role: "teacher",
-      schoolRole: demoSchoolRole,
-      schoolId: "school_demo_sma_1",
-      pendingApproval: false,
-    };
-
-    const demoName = demoSchoolRole === "principal"
-      ? "Dr. H. Ahmad Sudirman, M.Pd"
-      : demoSchoolRole === "administration"
-      ? "Budi Santoso, S.Kom"
-      : "Bambang Wijaya, S.Pd";
-
-    const dummyUserObj = user || ({
-      uid: demoSchoolRole === "principal" ? "demo_user_kepsek" : demoSchoolRole === "administration" ? "demo_user_tu" : "demo_user_mtk",
-      email: demoSchoolRole === "principal" ? "kepsek.demo@smart-att.web.id" : demoSchoolRole === "administration" ? "tu.demo@smart-att.web.id" : "guru.mtk@smart-att.web.id",
-      displayName: demoName,
-    } as unknown as User);
-
-    return (
-      <>
-        <SchoolWorkspace
-          user={dummyUserObj}
-          access={demoAccess}
-          initialName={demoName}
-          onLogout={() => {
-            setDemoSchoolRole(null);
-            if (typeof window !== "undefined") window.history.replaceState({}, "", "/");
-          }}
-          setToast={setToast}
-          QuizComponent={ExamsViewWithManual}
-        />
-        <ToastMessage toast={toast} />
-      </>
-    );
-  }
-
   if (!authReady) return <div className="grid min-h-screen place-items-center bg-slate-50"><div className="text-center"><img src="/logo.png" alt="SMART-ATT" className="mx-auto h-20 w-20 animate-pulse rounded-3xl object-cover" /><p className="mt-4 text-sm font-bold text-slate-500">Menyiapkan SMART-ATT...</p></div></div>;
-  if (!user && !demo) return <AuthScreen onDemo={() => setDemo(true)} onSelectDemoRole={(r) => setDemoSchoolRole(r)} />;
+  if (!user && !demo) return <AuthScreen onDemo={() => setDemo(true)} />;
   const isSuperAdmin = user?.email?.toLowerCase() === SUPERADMIN_EMAIL;
-  if (isSuperAdmin && (pathname === "/" || pathname.startsWith("/superadmin"))) return <SuperAdminProfessional user={user!} onLogout={async () => { if (user) await signOut(auth); setDemo(false); window.location.assign("/"); }} onSelectDemoRole={(r) => setDemoSchoolRole(r)} />;
+  if (isSuperAdmin && (pathname === "/" || pathname.startsWith("/superadmin"))) return <SuperAdminProfessional user={user!} onLogout={async () => { if (user) await signOut(auth); setDemo(false); window.location.assign("/"); }} />;
   if (pathname.startsWith("/superadmin")) return <SuperAdminDenied onLogout={async () => { if (user) await signOut(auth); setDemo(false); window.location.assign("/"); }} />;
   if (user && !demo && (!accountGate.loaded || (accountGate.verificationError && !showVerificationError))) return <div className="grid min-h-screen place-items-center bg-slate-50"><div className="text-center"><Loader2 className="mx-auto animate-spin text-teal-600" size={34}/><p className="mt-3 text-sm font-bold text-slate-500">Menyiapkan akun...</p></div></div>;
   if (user && !demo && accountGate.verificationError && showVerificationError) return <main className="grid min-h-screen place-items-center bg-slate-50 p-5"><section className="w-full max-w-md rounded-3xl border border-amber-100 bg-white p-8 text-center shadow-xl"><RefreshCcw className="mx-auto text-amber-600" size={40}/><h1 className="mt-5 text-2xl font-black">Status akun belum terbaca</h1><p className="mt-3 text-sm leading-6 text-slate-500">Koneksi ke data masa aktif sedang terganggu. Akun tidak dianggap expired dan Anda tidak perlu membeli token lagi.</p><button onClick={() => window.location.reload()} className="mt-6 w-full rounded-xl bg-teal-600 py-3 text-sm font-extrabold text-white">Coba verifikasi lagi</button><button onClick={() => void signOut(auth)} className="mt-4 text-xs font-black text-slate-500">Keluar dari akun</button></section></main>;
