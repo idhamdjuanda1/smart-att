@@ -92,12 +92,23 @@ Jika dilakukan konsisten, kebiasaan hadir tepat waktu tumbuh melalui rutinitas y
   }
 ];
 
+function mergeArticles(firestoreRows: ArticleRecord[]): ArticleRecord[] {
+  const map = new Map<string, ArticleRecord>();
+  for (const def of DEFAULT_ARTICLES) {
+    map.set(def.slug, def);
+  }
+  for (const row of firestoreRows) {
+    if (row.slug) map.set(row.slug, row);
+  }
+  return Array.from(map.values()).sort((a, b) => articleDateMs(b) - articleDateMs(a));
+}
+
 function usePublishedArticles() {
-  const [articles,setArticles]=useState<ArticleRecord[]>(DEFAULT_ARTICLES);
-  useEffect(()=>onSnapshot(query(collection(db,"articles"),where("published","==",true)),(snapshot)=>{
-    const rows=snapshot.docs.map((item)=>({id:item.id,...item.data()} as ArticleRecord));
-    setArticles((rows.length?rows:DEFAULT_ARTICLES).sort((a,b)=>articleDateMs(b)-articleDateMs(a)));
-  },()=>setArticles(DEFAULT_ARTICLES)),[]);
+  const [articles, setArticles] = useState<ArticleRecord[]>(DEFAULT_ARTICLES);
+  useEffect(() => onSnapshot(query(collection(db, "articles"), where("published", "==", true)), (snapshot) => {
+    const rows = snapshot.docs.map((item) => ({ id: item.id, ...item.data() } as ArticleRecord));
+    setArticles(mergeArticles(rows));
+  }, () => setArticles(DEFAULT_ARTICLES)), []);
   return articles;
 }
 
@@ -118,7 +129,8 @@ function articleDateMs(article:ArticleRecord){
 function coverUrl(article:ArticleRecord){
   const value=article.coverKey||article.coverUrl||"";
   if(!value)return "";
-  return /^https?:\/\//i.test(value)?value:`/api/storage/article/${encodeURIComponent(value)}`;
+  if(value.startsWith("/")||/^https?:\/\//i.test(value))return value;
+  return `/api/storage/article/${encodeURIComponent(value)}`;
 }
 
 export function LoginArticlePreview({variant="dark"}:{variant?:"dark"|"light"}){

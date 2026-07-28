@@ -18,15 +18,25 @@ function field(document: FirestoreDocument, key: string) {
 async function getPublishedArticle(slug: string) {
   try {
     const response = await fetch(`https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents/articles/${encodeURIComponent(slug)}`, { next: { revalidate: 60 } });
-    if (!response.ok) return null;
-    const document = await response.json() as FirestoreDocument;
-    if (field(document, "published") !== true) return null;
+    if (response.ok) {
+      const document = await response.json() as FirestoreDocument;
+      if (field(document, "published") === true) {
+        return {
+          title: String(field(document, "title") ?? "Artikel Pendidikan"),
+          excerpt: String(field(document, "excerpt") ?? "Artikel praktis untuk guru dan sekolah."),
+          coverKey: typeof field(document, "coverKey") === "string" ? String(field(document, "coverKey")) : "",
+        };
+      }
+    }
+  } catch {}
+  if (slug === "kuis-interaktif-kahoot-smart-att") {
     return {
-      title: String(field(document, "title") ?? "Artikel Pendidikan"),
-      excerpt: String(field(document, "excerpt") ?? "Artikel praktis untuk guru dan sekolah."),
-      coverKey: typeof field(document, "coverKey") === "string" ? String(field(document, "coverKey")) : "",
+      title: "Kuis Interaktif Ala Kahoot di SMART-ATT: Solusi Ulangan Harian Seru & Bebas Ribet untuk Sekolah",
+      excerpt: "SMART-ATT kini menghadirkan fitur Kuis Live Interaktif mirip Kahoot yang terintegrasi dengan generator soal AI dan data sekolah.",
+      coverKey: "",
     };
-  } catch { return null; }
+  }
+  return null;
 }
 
 export async function generateMetadata({ params }: { params: Promise<{ slug?: string[] }> }): Promise<Metadata> {
