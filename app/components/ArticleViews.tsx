@@ -12,13 +12,73 @@ export type ArticleRecord = {
   publishedAtMs?: number; updatedAtMs?: number; publishedAt?: unknown; updatedAt?: unknown;
 };
 
-export const DEFAULT_ARTICLE: ArticleRecord = {
-  id: "kebiasaan-hadir-tepat-waktu", slug: "kebiasaan-hadir-tepat-waktu",
-  title: "Membangun Kebiasaan Hadir Tepat Waktu Tanpa Membebani Guru",
-  excerpt: "Pendekatan sederhana untuk menjadikan data kehadiran sebagai bahan pendampingan, bukan sekadar angka administrasi.",
-  tags: ["Pendidikan", "Manajemen Kelas", "Absensi Digital"], published: true,
-  publishedAtMs: new Date("2026-07-15T07:00:00+07:00").getTime(),
-  body: `Kehadiran tepat waktu bukan hanya persoalan disiplin. Bagi guru, pola kedatangan siswa dapat menjadi petunjuk awal tentang kesiapan belajar, dukungan keluarga, jarak perjalanan, bahkan kondisi kesehatan siswa.
+export const KAHOOT_SEO_ARTICLE: ArticleRecord = {
+  id: "kuis-interaktif-kahoot-smart-att", slug: "kuis-interaktif-kahoot-smart-att",
+  title: "Kuis Interaktif Ala Kahoot di SMART-ATT: Solusi Ulangan Harian Seru & Bebas Ribet untuk Sekolah",
+  excerpt: "SMART-ATT kini menghadirkan fitur Kuis Live Interaktif mirip Kahoot yang terintegrasi dengan generator soal AI dan data sekolah. Guru bisa menguji kelas secara seru, cepat, dan transparan via HP!",
+  tags: ["Kuis Interaktif", "SMART-ATT", "Ulangan Online", "Game Edukasi", "Sekolah Digital"],
+  coverUrl: "/images/kahoot_quiz_banner.jpg", published: true,
+  publishedAtMs: new Date("2026-07-28T08:00:00+07:00").getTime(),
+  body: `Dunia pendidikan di era digital menuntut inovasi pembelajaran yang menyenangkan sekaligus efisien. Memahami kebutuhan guru dan sekolah di Indonesia, ekosistem **SMART-ATT (smart-att.web.id)** resmi meluncurkan fitur terbaru: **Kuis Live Interaktif Ala Kahoot**.
+
+Fitur ini dirancang khusus untuk mengubah suasana ulangan harian, kuis singkat, maupun evaluasi pembelajaran menjadi pengalaman bermain kuis kelompok yang interaktif, kompetitif, dan transparan.
+
+---
+
+### Mengapa Kuis Interaktif SMART-ATT Diperlukan di Kelas?
+
+Selama ini, pelaksanaan ulangan harian kerap terbentur kendala teknis: jaringan internet lambat, siswa harus mengingat username dan kata sandi rumit, atau suasana kelas yang tegang.
+
+Dengan fitur **Kuis Live SMART-ATT**, semua hambatan tersebut teratasi:
+
+1. **Akses Super Praktis (Tanpa Login / Tanpa Lupa Password)**
+   Siswa cukup membuka **smart-att.web.id/link** di browser smartphone mereka, memasukkan **4 Digit Kode Room**, lalu memasukkan nama mereka. Tanpa perlu registrasi akun atau memasukkan NIS!
+
+2. **Soal & Pilihan Tampil Langsung di HP Siswa**
+   Berbeda dengan kuis layar tunggal tradisional yang mewajibkan proyektor, di SMART-ATT teks soal dan 4 tombol jawaban interaktif (🔴 A, 🔷 B, 🟡 C, 🟢 D) muncul secara jelas dan cepat di masing-masing layar HP siswa.
+
+3. **Sistem Poin Kecepatan (Speed Bonus)**
+   Jawaban yang benar dan lebih cepat akan mendapatkan skor hingga 1.000 poin. Sistem ini mendorong fokus, ketepatan, dan antusiasme siswa sepanjang kuis berlangsung.
+
+4. **Generator Soal AI Otomatis**
+   Guru tidak perlu repot mengetik soal dari awal. Modul Generator Soal AI SMART-ATT dapat membuat puluhan soal pilihan ganda berkualitas sesuai tingkatan kelas dan materi pelajaran hanya dalam beberapa detik.
+
+5. **Podium Juara Real-Time (Juara 1 👑, 2 🥈, 3 🥉)**
+   Di akhir kuis, papan peringkat otomatis menampilkan selebrasi podium juara untuk 3 peserta dengan skor akumulasi tertinggi, menciptakan momentum apresiasi positif di dalam kelas.
+
+---
+
+### Panduan 3 Langkah Memulai Kuis Live di SMART-ATT
+
+1. **Buat & Pilih Soal**: Buka dashboard guru di SMART-ATT, pilih draf soal dari Bank Soal AI, lalu klik tombol **⚡ Main Kuis Live (Kahoot)**.
+2. **Bagikan Kode 4-Digit**: Tampilkan kode room 4 angka (contoh: 8492) di papan tulis atau proyektor. Siswa bergabung melalui **smart-att.web.id/link**.
+3. **Mulai & Rayakan**: Tekan **Mulai Kuis Live** ketika peserta berkumpul, jalankan soal per 15 detik, dan umumkan pemenang di akhir kuis!
+
+---
+
+### Bagian dari Ekosistem Sekolah Digital SMART-ATT
+
+Platform **SMART-ATT** bukan sekadar aplikasi absensi siswa, melainkan solusi manajemen sekolah terpadu yang mencakup:
+- Absensi QR Code Kartu Pelajar & GPS Location
+- Modul Tabungan Siswa Digital
+- Generator Jadwal Pelajaran Bebas Bentrok
+- Ulangan Harian Formal dengan Proteksi Anti-Curang
+- Kuis Live Interaktif Intermezo Pembelajaran
+
+Buka **smart-att.web.id** hari ini dan rasakan kemudahan mengelola sekolah modern serta menghidupkan suasana kelas dengan Kuis Live Interaktif SMART-ATT!`
+};
+
+export const DEFAULT_ARTICLE: ArticleRecord = KAHOOT_SEO_ARTICLE;
+
+export const DEFAULT_ARTICLES: ArticleRecord[] = [
+  KAHOOT_SEO_ARTICLE,
+  {
+    id: "kebiasaan-hadir-tepat-waktu", slug: "kebiasaan-hadir-tepat-waktu",
+    title: "Membangun Kebiasaan Hadir Tepat Waktu Tanpa Membebani Guru",
+    excerpt: "Pendekatan sederhana untuk menjadikan data kehadiran sebagai bahan pendampingan, bukan sekadar angka administrasi.",
+    tags: ["Pendidikan", "Manajemen Kelas", "Absensi Digital"], published: true,
+    publishedAtMs: new Date("2026-07-15T07:00:00+07:00").getTime(),
+    body: `Kehadiran tepat waktu bukan hanya persoalan disiplin. Bagi guru, pola kedatangan siswa dapat menjadi petunjuk awal tentang kesiapan belajar, dukungan keluarga, jarak perjalanan, bahkan kondisi kesehatan siswa.
 
 Langkah pertama adalah membuat proses pencatatan sesederhana mungkin. Guru sebaiknya dapat membuka pemindai, membaca kartu siswa, lalu langsung melanjutkan ke siswa berikutnya. Teknologi yang baik mengurangi pekerjaan berulang dan memberi guru lebih banyak waktu untuk menyambut kelas.
 
@@ -29,14 +89,15 @@ Komunikasi dengan orang tua juga perlu singkat dan manusiawi. Pesan yang menjela
 Yang terpenting, sistem harus tetap memberi ruang bagi kebijakan sekolah. Batas waktu, kategori kehadiran, serta tindak lanjut dapat disesuaikan dengan kondisi kelas. Teknologi berfungsi sebagai alat bantu keputusan; hubungan guru, siswa, dan keluarga tetap menjadi pusat pendidikan.
 
 Jika dilakukan konsisten, kebiasaan hadir tepat waktu tumbuh melalui rutinitas yang mudah dipahami: siswa tahu kapan kehadiran dicatat, orang tua tahu cara memberi konfirmasi, dan guru memiliki laporan yang siap digunakan untuk pendampingan.`
-};
+  }
+];
 
 function usePublishedArticles() {
-  const [articles,setArticles]=useState<ArticleRecord[]>([DEFAULT_ARTICLE]);
+  const [articles,setArticles]=useState<ArticleRecord[]>(DEFAULT_ARTICLES);
   useEffect(()=>onSnapshot(query(collection(db,"articles"),where("published","==",true)),(snapshot)=>{
     const rows=snapshot.docs.map((item)=>({id:item.id,...item.data()} as ArticleRecord));
-    setArticles((rows.length?rows:[DEFAULT_ARTICLE]).sort((a,b)=>articleDateMs(b)-articleDateMs(a)));
-  },()=>setArticles([DEFAULT_ARTICLE])),[]);
+    setArticles((rows.length?rows:DEFAULT_ARTICLES).sort((a,b)=>articleDateMs(b)-articleDateMs(a)));
+  },()=>setArticles(DEFAULT_ARTICLES)),[]);
   return articles;
 }
 
