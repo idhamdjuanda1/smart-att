@@ -1,8 +1,8 @@
 export const PUBLIC_APP_ORIGIN = "https://smart-att.web.id";
-export const QUIZ_ACCESS_CODE_LENGTH = 10;
+export const QUIZ_ACCESS_CODE_LENGTH = 4;
 
-const QUIZ_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-const QUIZ_ACCESS_CODE_PATTERN = /^[A-HJ-NP-Z2-9]{10}$/;
+const QUIZ_CODE_ALPHABET = "0123456789";
+const QUIZ_ACCESS_CODE_PATTERN = /^(?:\d{4}|[A-HJ-NP-Z2-9]{10})$/;
 
 export type ParsedQuizLinkInput =
   | { kind: "accessCode"; value: string }

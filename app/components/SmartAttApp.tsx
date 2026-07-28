@@ -26,6 +26,7 @@ import { parseAiQuizText, type QuizQuestion } from "../lib/quiz";
 import { createRandomizedQuiz, escapeHtml, formatCountdown, type RandomizedQuestion } from "../lib/quizRuntime";
 import { createStudentThumbnail, drawStudentCrop, loadPhoto, resizeStudentPhoto, type PhotoAspect } from "../lib/studentPhoto";
 import { findStudentByQrOrNis } from "../lib/attendance";
+import { startQrScanner } from "../lib/qrScanner";
 import { AcademicView, ScoresView } from "./GradeViews";
 import { AttendanceViewPro, ScannerViewPro } from "./OperationalViews";
 import { PublicSubjectElection, PublicElectionStatus } from "./SubjectElectionViews";
@@ -1332,11 +1333,11 @@ function StudentQrCard({student,schoolName,academicYear,user,schoolLogoKey="",te
 }
 type TransferDirectoryStudent={ownerUid:string;studentId:string;nis:string;nisn?:string;name:string;className:string;schoolName:string;guardian?:string;phone?:string;photoKey?:string;photoThumbnailKey?:string;photoAspect?:PhotoAspect};
 function parseTransferStudentQr(raw:string){const text=raw.trim().replace(/^\uFEFF/,"");if(!text)return null;try{const parsed=JSON.parse(text) as {app?:unknown;ownerUid?:unknown;uid?:unknown;teacherUid?:unknown;studentId?:unknown;id?:unknown};const ownerUid=String(parsed.ownerUid??parsed.uid??parsed.teacherUid??"").trim();const studentId=String(parsed.studentId??parsed.id??"").trim();const app=String(parsed.app??"").trim().toUpperCase();if(!studentId||(app&&app!=="SMART-ATT"))return null;return{ownerUid,studentId};}catch{return{ownerUid:"",studentId:text};}}function TransferStudentModal({user,classes,schoolName,students,onClose,setToast}:{user:User;classes:string[];schoolName:string;students:Student[];onClose:()=>void;setToast:(toast:Toast)=>void}){
-  const videoRef=useRef<HTMLVideoElement>(null);const streamRef=useRef<MediaStream|null>(null);const timerRef=useRef<ReturnType<typeof setInterval>|null>(null);
+  const videoRef=useRef<HTMLVideoElement>(null);const streamRef=useRef<MediaStream|null>(null);const qrScannerStopRef=useRef<(()=>void)|null>(null);
   const [targetClass,setTargetClass]=useState(classes[0]??"");const [found,setFound]=useState<TransferDirectoryStudent|null>(null);const [error,setError]=useState("");const [busy,setBusy]=useState(false);const scanningRef=useRef(false);
-  function stop(){streamRef.current?.getTracks().forEach((track)=>track.stop());streamRef.current=null;if(timerRef.current)clearInterval(timerRef.current);timerRef.current=null;}
+  function stop(){qrScannerStopRef.current?.();qrScannerStopRef.current=null;streamRef.current?.getTracks().forEach((track)=>track.stop());streamRef.current=null;}
   async function readQr(raw:string){if(scanningRef.current)return;scanningRef.current=true;try{const identity=parseTransferStudentQr(raw);if(!identity)throw new Error("QR bukan kartu SMART-ATT terbaru. Arahkan kamera ke QR siswa yang besar, bukan logo.");const {ownerUid,studentId}=identity;if(ownerUid&&ownerUid===user.uid)throw new Error("Siswa sudah berada di akun ini. Gunakan Edit Siswa untuk mengganti kelas.");let snapshot=await getDoc(doc(db,"studentDirectory",studentId));if(!snapshot.exists()&&ownerUid)snapshot=await getDoc(doc(db,"studentDirectory",`${ownerUid}__${studentId}`));if(!snapshot.exists())throw new Error("Data asal belum tersedia. Guru lama perlu membuka Data Siswa terlebih dahulu.");const data=snapshot.data();const sourceOwnerUid=String(data.ownerUid||ownerUid);if(sourceOwnerUid===user.uid)throw new Error("Siswa sudah berada di akun ini. Gunakan Edit Siswa untuk mengganti kelas.");const student:TransferDirectoryStudent={ownerUid:sourceOwnerUid,studentId:String(data.studentId||studentId),nis:String(data.nis),nisn:typeof data.nisn==="string"?data.nisn:"",name:String(data.name),className:String(data.className),schoolName:String(data.schoolName||"Sekolah"),guardian:typeof data.guardian==="string"?data.guardian:"",phone:typeof data.phone==="string"?data.phone:"",photoKey:typeof data.photoKey==="string"?data.photoKey:"",photoThumbnailKey:typeof data.photoThumbnailKey==="string"?data.photoThumbnailKey:"",photoAspect:data.photoAspect==="4:3"?"4:3":"3:4"};if(students.some((item)=>item.nis===student.nis||Boolean(student.nisn&&item.nisn===student.nisn)))throw new Error(`NIS/NISN ${student.nis} sudah ada di Data Siswa akun ini.`);setFound(student);setError("");stop();}catch(value){setError(value instanceof Error?value.message:"QR tidak dapat dibaca.");setTimeout(()=>{scanningRef.current=false},1200);}}
-  async function start(){try{const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}},audio:false});streamRef.current=stream;if(videoRef.current){videoRef.current.srcObject=stream;await videoRef.current.play()}const Detector=(window as unknown as {BarcodeDetector?:new(options:{formats:string[]})=>{detect(source:HTMLVideoElement):Promise<{rawValue:string}[]>}}).BarcodeDetector;if(!Detector){setError("Browser belum mendukung pemindai QR. Gunakan Chrome terbaru di HP.");return;}const detector=new Detector({formats:["qr_code"]});timerRef.current=setInterval(async()=>{if(!videoRef.current||scanningRef.current||videoRef.current.readyState<2)return;const codes=await detector.detect(videoRef.current).catch(()=>[]);const valid=codes.find((code)=>code.rawValue&&parseTransferStudentQr(code.rawValue));if(valid?.rawValue){void readQr(valid.rawValue);return;}if(codes.length>0)setError("QR pada logo atau objek lain terbaca. Arahkan kamera ke QR siswa yang besar.");},450);}catch{setError("Kamera tidak dapat dibuka. Izinkan akses kamera pada browser.");}}
+  async function start(){try{const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:"environment"}},audio:false});streamRef.current=stream;if(!videoRef.current)throw new Error("video-unavailable");videoRef.current.srcObject=stream;await videoRef.current.play();const scanner=await startQrScanner({video:videoRef.current,stream,intervalMs:450,onResult:(value)=>{if(parseTransferStudentQr(value))void readQr(value);else setError("QR pada logo atau objek lain terbaca. Arahkan kamera ke QR siswa yang besar.");}});if(streamRef.current!==stream)scanner.stop();else qrScannerStopRef.current=scanner.stop;}catch{stop();setError("Kamera atau pemindai QR tidak dapat dibuka. Izinkan akses kamera pada browser.");}}
   useEffect(()=>{void start();return()=>stop()},[]);
   async function transfer(){
     if(!found||!targetClass||busy)return;
@@ -1892,13 +1893,13 @@ function SavingsView({user,demo,students,setToast}:{user:User|null;demo:boolean;
 }
 
 function LegacyScannerView({user,demo,students,setToast}:{user:User|null;demo:boolean;students:Student[];setToast:(t:Toast)=>void}) {
-  const videoRef=useRef<HTMLVideoElement>(null); const streamRef=useRef<MediaStream|null>(null); const timerRef=useRef<ReturnType<typeof setInterval>|null>(null); const [active,setActive]=useState(false); const [manual,setManual]=useState(""); const [last,setLast]=useState<Student|null>(null);
+  const videoRef=useRef<HTMLVideoElement>(null); const streamRef=useRef<MediaStream|null>(null); const qrScannerStopRef=useRef<(()=>void)|null>(null); const [active,setActive]=useState(false); const [manual,setManual]=useState(""); const [last,setLast]=useState<Student|null>(null);
   const [schoolName,setSchoolName]=useState(demo?"SMP Harapan Bangsa":"Sekolah");
   useEffect(()=>{if(demo||!user)return;void getDoc(doc(db,"users",user.uid)).then((snapshot)=>{const value=snapshot.data()?.schoolName;if(typeof value==="string"&&value.trim())setSchoolName(value.trim())});},[demo,user]);
   function record(student:Student){setLast(student);setToast({message:`${student.name} tercatat hadir pukul ${new Date().toLocaleTimeString("id-ID",{hour:"2-digit",minute:"2-digit"})}.`,tone:"success"});}
   function processValue(raw:string){try{const parsed=JSON.parse(raw);const found=students.find(s=>s.id===parsed.studentId||s.nis===parsed.nis);if(found)record(found);else throw new Error();}catch{const found=students.find(s=>s.nis===raw.trim());if(found)record(found);else setToast({message:"QR/NIS siswa tidak ditemukan.",tone:"error"});}}
-  async function start(){try{const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"},audio:false});streamRef.current=stream;if(videoRef.current){videoRef.current.srcObject=stream;await videoRef.current.play();}setActive(true);const Detector=(window as unknown as {BarcodeDetector?:new(o:{formats:string[]})=>{detect:(source:HTMLVideoElement)=>Promise<{rawValue:string}[]>}}).BarcodeDetector;if(Detector){const detector=new Detector({formats:["qr_code"]});timerRef.current=setInterval(async()=>{if(!videoRef.current)return;const codes=await detector.detect(videoRef.current).catch(()=>[]);if(codes[0]?.rawValue){processValue(codes[0].rawValue);stop();}},700);}}catch{setToast({message:"Kamera tidak dapat dibuka. Izinkan akses kamera atau gunakan input NIS.",tone:"error"});}}
-  function stop(){streamRef.current?.getTracks().forEach(t=>t.stop());streamRef.current=null;if(timerRef.current)clearInterval(timerRef.current);setActive(false);}
+  async function start(){try{const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"},audio:false});streamRef.current=stream;if(!videoRef.current)throw new Error("video-unavailable");videoRef.current.srcObject=stream;await videoRef.current.play();setActive(true);const scanner=await startQrScanner({video:videoRef.current,stream,intervalMs:700,onResult:(value)=>{processValue(value);stop();}});if(streamRef.current!==stream)scanner.stop();else qrScannerStopRef.current=scanner.stop;}catch{stop();setToast({message:"Kamera atau pemindai QR tidak dapat dibuka. Izinkan akses kamera atau gunakan input NIS.",tone:"error"});}}
+  function stop(){qrScannerStopRef.current?.();qrScannerStopRef.current=null;streamRef.current?.getTracks().forEach(t=>t.stop());streamRef.current=null;setActive(false);}
   useEffect(()=>stop,[]);
   return <>
 <SectionHeading eyebrow="Absensi QR" title="Scan kehadiran siswa" description="Arahkan kamera ke kartu QR. Status hadir/terlambat dihitung dari jam masuk 07:00."/>
@@ -1971,7 +1972,7 @@ function LegacyScannerView({user,demo,students,setToast}:{user:User|null;demo:bo
 function ScannerView({user,demo,students,setToast}:{user:User|null;demo:boolean;students:Student[];setToast:(t:Toast)=>void}) {
   const videoRef=useRef<HTMLVideoElement>(null);
   const streamRef=useRef<MediaStream|null>(null);
-  const timerRef=useRef<ReturnType<typeof setInterval>|null>(null);
+  const qrScannerStopRef=useRef<(()=>void)|null>(null);
   const sessionRef=useRef<AbsensiSession|null>(null);
   const studentsRef=useRef(students);
   const classes=useMemo(()=>Array.from(new Set(students.map((student)=>student.className).filter(Boolean))).sort(),[students]);
@@ -1999,7 +2000,7 @@ function ScannerView({user,demo,students,setToast}:{user:User|null;demo:boolean;
     },()=>setToast({message:"Sesi absensi belum dapat dimuat.",tone:"error"}));
   },[demo,user,setToast]);
 
-  function stopCamera(){streamRef.current?.getTracks().forEach((track)=>track.stop());streamRef.current=null;if(timerRef.current)clearInterval(timerRef.current);timerRef.current=null;setActive(false)}
+  function stopCamera(){qrScannerStopRef.current?.();qrScannerStopRef.current=null;streamRef.current?.getTracks().forEach((track)=>track.stop());streamRef.current=null;setActive(false)}
   useEffect(()=>()=>stopCamera(),[]);
 
   async function record(student:Student,source:"qr"|"manual"){
@@ -2031,14 +2032,12 @@ function ScannerView({user,demo,students,setToast}:{user:User|null;demo:boolean;
       stopCamera();
       const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"environment"},audio:false});
       streamRef.current=stream;
-      if(videoRef.current){videoRef.current.srcObject=stream;await videoRef.current.play()}
+      if(!videoRef.current)throw new Error("video-unavailable");
+      videoRef.current.srcObject=stream;await videoRef.current.play();
       setActive(true);
-      const Detector=(window as unknown as {BarcodeDetector?:new(options:{formats:string[]})=>{detect:(source:HTMLVideoElement)=>Promise<{rawValue:string}[]>}}).BarcodeDetector;
-      if(Detector){
-        const detector=new Detector({formats:["qr_code"]});
-        timerRef.current=setInterval(async()=>{if(!videoRef.current)return;const codes=await detector.detect(videoRef.current).catch(()=>[]);if(codes[0]?.rawValue){await processValue(codes[0].rawValue,"qr");stopCamera()}},700);
-      }
-    }catch{setToast({message:"Kamera tidak dapat dibuka. Izinkan kamera atau gunakan input NIS manual.",tone:"error"});}
+      const scanner=await startQrScanner({video:videoRef.current,stream,intervalMs:700,onResult:(value)=>{void processValue(value,"qr").finally(stopCamera)}});
+      if(streamRef.current!==stream)scanner.stop();else qrScannerStopRef.current=scanner.stop;
+    }catch{stopCamera();setToast({message:"Kamera atau pemindai QR tidak dapat dibuka. Izinkan kamera atau gunakan input NIS manual.",tone:"error"});}
   }
 
   async function beginSession(){

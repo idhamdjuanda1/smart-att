@@ -12,6 +12,7 @@ import {
 } from "firebase/firestore";
 import { db } from "../lib/firebase";
 import { findStudentByQrOrNis } from "../lib/attendance";
+import { selectPreferredCameraDeviceId, startQrScanner } from "../lib/qrScanner";
 import { workspaceCollection, workspaceDoc, type WorkspaceScope } from "../lib/workspace";
 
 type Student = {
@@ -97,7 +98,7 @@ type ScannerProps = CommonProps & { configuredClasses?: string[]; schoolName?: s
 export function ScannerViewPro({ user, demo, students, setToast, scope, allowedClassNames, configuredClasses = [], schoolName: configuredSchoolName, initialClassName = "", initialStartTime = "07:15", schoolWide = false }: ScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const detectorTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const qrScannerStopRef = useRef<(() => void) | null>(null);
   const pendingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -124,6 +125,7 @@ export function ScannerViewPro({ user, demo, students, setToast, scope, allowedC
   const [selectedCameraId, setSelectedCameraId] = useState(() => typeof window === 'undefined' ? '' : window.localStorage.getItem(CAMERA_STORAGE_KEY) ?? '');
   const [selectedFacingMode, setSelectedFacingMode] = useState<CameraFacingMode>(() => typeof window !== 'undefined' && window.localStorage.getItem(CAMERA_FACING_STORAGE_KEY) === 'user' ? 'user' : 'environment');
   const [activeCameraLabel, setActiveCameraLabel] = useState('');
+  const [scannerEngine, setScannerEngine] = useState<'' | 'native' | 'zxing' | 'jsqr'>('');
   const [cameraMenuOpen, setCameraMenuOpen] = useState(false);
   const [manualNis, setManualNis] = useState("");
   const [pending, setPending] = useState<{ student: Student; source: "qr" | "manual"; scannedAtMs: number; existing?: AttendanceHit; targetSession?: AttendanceSession } | null>(null);
@@ -203,11 +205,12 @@ export function ScannerViewPro({ user, demo, students, setToast, scope, allowedC
   }, [selectedClass, todaySessions]);
 
   function stopCamera() {
+    qrScannerStopRef.current?.();
+    qrScannerStopRef.current = null;
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
-    if (detectorTimerRef.current) clearInterval(detectorTimerRef.current);
-    detectorTimerRef.current = null;
     setCameraActive(false);
+    setScannerEngine('');
     setCameraMenuOpen(false);
   }
 
@@ -390,16 +393,20 @@ export function ScannerViewPro({ user, demo, students, setToast, scope, allowedC
       if (!navigator.mediaDevices?.getUserMedia) throw new Error('camera-unavailable');
       const knownDevices = await refreshCameraDevices();
       const storedCameraId = requestedCameraId ?? (!requestedFacingMode ? selectedCameraId : '') ?? (typeof window !== 'undefined' ? window.localStorage.getItem(CAMERA_STORAGE_KEY) ?? '' : '');
-      const preferredCameraId = !requestedFacingMode && storedCameraId && knownDevices.some((device) => device.deviceId === storedCameraId) ? storedCameraId : '';
       const preferredFacingMode = requestedFacingMode ?? selectedFacingMode;
+      const labelledCameraId = selectPreferredCameraDeviceId(knownDevices, preferredFacingMode);
+      const preferredCameraId = requestedCameraId
+        || (requestedFacingMode ? labelledCameraId : '')
+        || (storedCameraId && knownDevices.some((device) => device.deviceId === storedCameraId) ? storedCameraId : '')
+        || labelledCameraId;
       let stream: MediaStream | null = null;
       if (preferredCameraId) {
-        try { stream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: preferredCameraId } }, audio: false }); } catch {}
+        try { stream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: preferredCameraId }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false }); } catch {}
       }
       if (!stream) {
-        try { stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: preferredFacingMode } }, audio: false }); }
+        try { stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: preferredFacingMode }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false }); }
         catch {
-          try { stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: preferredFacingMode } }, audio: false }); }
+          try { stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: preferredFacingMode }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false }); }
           catch { stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false }); }
         }
       }
@@ -415,15 +422,22 @@ export function ScannerViewPro({ user, demo, students, setToast, scope, allowedC
       setActiveCameraLabel(deviceLabel);
       if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play(); }
       setCameraActive(true);
-      const Detector = (window as unknown as { BarcodeDetector?: new(options: { formats: string[] }) => { detect(source: HTMLVideoElement): Promise<{ rawValue: string }[]> } }).BarcodeDetector;
-      if (!Detector) { setToast({ message: 'Pemindai QR browser tidak tersedia. Gunakan Chrome terbaru atau input NIS manual.', tone: 'error' }); return; }
-      const detector = new Detector({ formats: ['qr_code'] });
-      detectorTimerRef.current = setInterval(async () => {
-        if (!videoRef.current || pendingRef.current || videoRef.current.readyState < 2) return;
-        const codes = await detector.detect(videoRef.current).catch(() => []);
-        if (codes[0]?.rawValue) void stageScan(codes[0].rawValue, 'qr');
-      }, 450);
+      if (!videoRef.current) throw new Error('video-unavailable');
+      const scanner = await startQrScanner({
+        video: videoRef.current,
+        stream,
+        intervalMs: 450,
+        onResult: (value) => {
+          if (!pendingRef.current) void stageScan(value, 'qr');
+        },
+      });
+      if (streamRef.current !== stream) scanner.stop();
+      else {
+        qrScannerStopRef.current = scanner.stop;
+        setScannerEngine(scanner.engine);
+      }
     } catch {
+      stopCamera();
       setToast({ message: 'Kamera tidak dapat dibuka. Izinkan akses kamera atau gunakan input NIS manual.', tone: 'error' });
     }
   }
@@ -643,7 +657,7 @@ export function ScannerViewPro({ user, demo, students, setToast, scope, allowedC
       {cameraMenuOpen&&cameraDevices.length>1&&<div className='mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3'>{cameraDevices.map((device)=><button key={device.deviceId} onClick={() => void switchCamera(device.deviceId)} className={`flex min-h-11 items-center justify-between gap-3 rounded-xl border px-3 py-2 text-left text-xs font-bold ${device.deviceId===selectedCameraId?'border-teal-500 bg-teal-50 text-teal-800':'border-slate-200 bg-white text-slate-600'}`}><span className='min-w-0 truncate'>{device.label}</span>{device.deviceId===selectedCameraId&&<Check className='shrink-0' size={14}/>}</button>)}</div>}
     </section>
     <div className="grid gap-5 xl:grid-cols-[1.25fr_.75fr]">
-      <section className="overflow-hidden rounded-3xl bg-slate-950 p-3 shadow-xl sm:p-5"><div className="relative min-h-[58dvh] overflow-hidden rounded-2xl bg-[#061e24] sm:aspect-video sm:min-h-0"><video ref={videoRef} muted playsInline className={`absolute inset-0 h-full w-full object-cover ${cameraActive ? "block" : "hidden"}`}/><div className="pointer-events-none absolute inset-[12%] rounded-3xl border border-dashed border-white/40"><span className="absolute -left-px -top-px h-12 w-12 rounded-tl-2xl border-l-4 border-t-4 border-teal-300"/><span className="absolute -right-px -top-px h-12 w-12 rounded-tr-2xl border-r-4 border-t-4 border-teal-300"/><span className="absolute -bottom-px -left-px h-12 w-12 rounded-bl-2xl border-b-4 border-l-4 border-teal-300"/><span className="absolute -bottom-px -right-px h-12 w-12 rounded-br-2xl border-b-4 border-r-4 border-teal-300"/></div>{!cameraActive&&<div className="absolute inset-0 grid place-items-center p-6 text-center text-white"><div><Camera className="mx-auto text-teal-300" size={48}/><p className="mt-4 font-black">Kamera belum aktif</p><button onClick={() => void startCamera()} disabled={!session} className="mt-4 rounded-xl bg-teal-300 px-5 py-3 text-xs font-extrabold text-slate-950 disabled:bg-slate-600 disabled:text-slate-300">{session ? "Buka kamera" : "Pilih kelas & siapkan absensi"}</button></div></div>}<div className="absolute inset-x-3 top-3 flex items-center justify-between gap-2"><span className="rounded-full bg-slate-950/70 px-3 py-1.5 text-[10px] font-black text-white backdrop-blur">{cameraActive ? "KAMERA AKTIF" : "KAMERA NONAKTIF"}</span><span className="rounded-full bg-teal-400/90 px-3 py-1.5 text-[10px] font-black text-slate-950">{session ? `${session.className} · ${presentCount}/${sessionStudents.length}` : "Pilih kelas sebelum scan"}</span></div></div></section>
+      <section className="overflow-hidden rounded-3xl bg-slate-950 p-3 shadow-xl sm:p-5"><div className="relative min-h-[58dvh] overflow-hidden rounded-2xl bg-[#061e24] sm:aspect-video sm:min-h-0"><video ref={videoRef} muted playsInline className={`absolute inset-0 h-full w-full object-cover ${cameraActive ? "block" : "hidden"}`}/><div className="pointer-events-none absolute inset-[12%] rounded-3xl border border-dashed border-white/40"><span className="absolute -left-px -top-px h-12 w-12 rounded-tl-2xl border-l-4 border-t-4 border-teal-300"/><span className="absolute -right-px -top-px h-12 w-12 rounded-tr-2xl border-r-4 border-t-4 border-teal-300"/><span className="absolute -bottom-px -left-px h-12 w-12 rounded-bl-2xl border-b-4 border-l-4 border-teal-300"/><span className="absolute -bottom-px -right-px h-12 w-12 rounded-br-2xl border-b-4 border-r-4 border-teal-300"/></div>{!cameraActive&&<div className="absolute inset-0 grid place-items-center p-6 text-center text-white"><div><Camera className="mx-auto text-teal-300" size={48}/><p className="mt-4 font-black">Kamera belum aktif</p><button onClick={() => void startCamera()} disabled={!session} className="mt-4 rounded-xl bg-teal-300 px-5 py-3 text-xs font-extrabold text-slate-950 disabled:bg-slate-600 disabled:text-slate-300">{session ? "Buka kamera" : "Pilih kelas & siapkan absensi"}</button></div></div>}<div className="absolute inset-x-3 top-3 flex items-center justify-between gap-2"><span className="rounded-full bg-slate-950/70 px-3 py-1.5 text-[10px] font-black text-white backdrop-blur">{cameraActive ? (scannerEngine === 'jsqr' ? "PEMINDAI IPHONE AKTIF" : "KAMERA AKTIF") : "KAMERA NONAKTIF"}</span><span className="rounded-full bg-teal-400/90 px-3 py-1.5 text-[10px] font-black text-slate-950">{session ? `${session.className} · ${presentCount}/${sessionStudents.length}` : "Pilih kelas sebelum scan"}</span></div></div></section>
       <div className="space-y-4"><section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex items-center gap-3"><div className="rounded-xl bg-teal-50 p-3 text-teal-700"><ScanLine size={20}/></div><div><h3 className="font-black">Input NIS manual</h3><p className="text-xs text-slate-400">Langsung tercatat setelah data ditemukan.</p></div></div><div className="mt-4 flex gap-2"><input disabled={!session} value={manualNis} onChange={(event) => setManualNis(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void stageScan(manualNis, "manual"); }} placeholder="Masukkan NIS" className="h-12 min-w-0 flex-1 rounded-xl border border-slate-200 px-3 text-sm outline-none focus:border-teal-500"/><button disabled={!session || !manualNis.trim()} onClick={() => void stageScan(manualNis, "manual")} className="rounded-xl bg-slate-950 px-4 text-xs font-extrabold text-white disabled:opacity-40">Cari</button></div></section><section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><p className="text-xs font-bold text-slate-500">Status sesi</p><h3 className="mt-2 text-lg font-black">{session ? (session.status === "open" ? `${session.className} sedang berlangsung` : `${session.className} selesai`) : "Pilih kelas terlebih dahulu"}</h3><p className="mt-1 text-xs leading-5 text-slate-400">{session ? `${presentCount} hadir, ${sickCount} sakit, ${permissionCount} izin, dan ${absentStudents.length} Alpha / belum hadir.` : "Pilih kelas dan tekan Mulai Absensi. Satu kelas hanya mempunyai satu sesi untuk tanggal hari ini."}</p></section></div>
     </div>
     {session&&<>
