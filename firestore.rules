@@ -513,6 +513,11 @@ service cloud.firestore {
          (resource.data.keys().hasAny(['schoolId']) && isSchoolPrincipal(resource.data.schoolId)));
     }
 
+    match /articles/{articleId} {
+      allow read: if true;
+      allow write: if hasSuperAdminEmail();
+    }
+
     match /publicResponses/{responseId} {
       allow create: if
         request.resource.data.keys().hasOnly([
