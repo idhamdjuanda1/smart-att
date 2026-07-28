@@ -595,7 +595,7 @@ function AccountLockedScreen({ user, disabled, accountType, onLogout }: { user: 
         const tokenData = tokenSnapshot.data() as { status?: string; tokenExpiresAtMs?: number; durationDays?: number; accountType?: TokenAccountType };
         const now = Date.now();
         if (tokenData.status !== "active") throw new Error(tokenData.status === "used" ? "Token sudah digunakan." : "Token tidak aktif.");
-        if (!tokenData.tokenExpiresAtMs || tokenData.tokenExpiresAtMs <= now) throw new Error("Token sudah kedaluwarsa.");
+        if (tokenData.tokenExpiresAtMs && tokenData.tokenExpiresAtMs <= now) throw new Error("Token sudah kedaluwarsa.");
         if (!tokenData.durationDays) throw new Error("Durasi token tidak valid.");
         const userData = userSnapshot.data() as { accountType?: TokenAccountType; activeUntilMs?: number; trialEndsAt?: { toMillis?: () => number } } | undefined;
         if (!tokenMatchesAccountType(tokenData.accountType, userData?.accountType)) {

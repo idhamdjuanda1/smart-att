@@ -159,7 +159,9 @@ export function SuperAdminProfessional({ user, onLogout }: { user: User; onLogou
     setBusy("generate"); setError("");
     try {
       const createdAtMs = Date.now();
-      await setDoc(doc(db, "activationTokens", code), { code, accountType: tokenAccountType, durationDays: days, status: "active", createdAtMs, tokenExpiresAtMs: createdAtMs + 90 * 86400000, tokenExpiresAt: new Date(createdAtMs + 90 * 86400000), createdAt: serverTimestamp() });
+      const activationWindowDays = Math.max(365, days * 3);
+      const tokenExpiresAtMs = createdAtMs + activationWindowDays * 86400000;
+      await setDoc(doc(db, "activationTokens", code), { code, accountType: tokenAccountType, durationDays: days, status: "active", createdAtMs, tokenExpiresAtMs, tokenExpiresAt: new Date(tokenExpiresAtMs), createdAt: serverTimestamp() });
       setGenerated(code);
     } catch { setError("Token gagal dibuat."); }
     finally { setBusy(""); }
@@ -430,7 +432,7 @@ export function ProfileProfessional({ user, demo, students, setToast }: { user: 
         const tokenData = tokenSnapshot.data() as ActivationToken;
         const currentMs = Date.now();
         if (tokenData.status !== "active") throw new Error(tokenData.status === "used" ? "Token sudah digunakan." : "Token tidak aktif.");
-        if (tokenData.tokenExpiresAtMs <= currentMs) throw new Error("Token sudah kedaluwarsa.");
+        if (tokenData.tokenExpiresAtMs && tokenData.tokenExpiresAtMs <= currentMs) throw new Error("Token sudah kedaluwarsa.");
         const userData = userSnapshot.data() as Account | undefined;
         if (!tokenMatchesAccountType(tokenData.accountType, userData?.accountType)) {
           throw new Error(userData?.accountType === "school" ? "Token Guru SD tidak dapat dipakai untuk akun sekolah." : "Token sekolah tidak dapat dipakai untuk akun Guru SD perorangan.");
