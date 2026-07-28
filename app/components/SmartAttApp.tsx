@@ -9,7 +9,7 @@ import {
   LayoutDashboard, Link2, ListChecks, Loader2, LockKeyhole, LogOut, Menu, MessageCircle,
   MoreHorizontal, PencilLine, Plus, Printer, QrCode, RefreshCcw, ScanLine, School,
   Search, Send, Settings, ShieldAlert, ShieldCheck, Sparkles, Timer, Trash2, Upload, UserCheck,
-  UserPlus, Users, Wallet, X, XCircle,
+  UserPlus, Users, Wallet, X, XCircle, Trophy, Zap,
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import {
@@ -2345,6 +2345,295 @@ function ManualExamModal({user,demo,students,setToast,scope,onClose}:{user:User|
   return <Modal title="Buat soal manual" subtitle="Tambahkan soal satu per satu, tentukan kunci, lalu simpan sebagai draf." onClose={onClose}><div className="space-y-4"><div className="grid gap-4 sm:grid-cols-2"><Field label="Judul ulangan" value={title} onChange={setTitle} placeholder="Contoh: Ulangan Harian Bab 1" required/><Field label="Mata pelajaran" value={subject} onChange={setSubject} placeholder="Matematika" required/></div><div className="grid gap-4 sm:grid-cols-3"><label className="block"><span className="mb-2 block text-xs font-extrabold text-slate-700">Kelas</span>{classes.length?<select value={className} onChange={(event)=>setClassName(event.target.value)} className="h-12 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-teal-500">{classes.map((item)=><option key={item}>{item}</option>)}</select>:<input value={className} onChange={(event)=>setClassName(event.target.value)} placeholder="V-A" className="h-12 w-full rounded-xl border border-slate-200 px-3 text-sm outline-none focus:border-teal-500"/>}</label><Field label="Bab / materi" value={chapter} onChange={setChapter} placeholder="Materi ujian"/><Field label="Durasi (menit)" type="number" value={duration} onChange={setDuration}/></div><div className="my-5 border-t border-slate-100"/><div className="rounded-2xl bg-slate-50 p-4"><div className="mb-4 flex items-center justify-between"><div><h4 className="text-sm font-black">{editingIndex===null?`Soal ${questions.length+1}`:`Edit soal ${editingIndex+1}`}</h4><p className="mt-1 text-[10px] text-slate-400">Pilih satu jawaban yang benar.</p></div>{editingIndex!==null&&<button onClick={()=>{setDraft(emptyQuestion());setEditingIndex(null)}} className="text-xs font-bold text-slate-500">Batal edit</button>}</div><label className="block"><span className="mb-2 block text-xs font-extrabold">Pertanyaan</span><textarea value={draft.question} onChange={(event)=>setDraft((current)=>({...current,question:event.target.value}))} className="min-h-24 w-full rounded-xl border border-slate-200 bg-white p-3 text-sm outline-none focus:border-teal-500" placeholder="Tuliskan pertanyaan..."/></label><div className="mt-4 grid gap-3 sm:grid-cols-2">{draft.choices.map((choice,index)=><label key={index} className={`flex items-center gap-2 rounded-xl border p-2 ${draft.answerIndex===index?'border-emerald-300 bg-emerald-50':'border-slate-200 bg-white'}`}><input type="radio" name="correct-answer" checked={draft.answerIndex===index} onChange={()=>setDraft((current)=>({...current,answerIndex:index}))} className="accent-emerald-600"/><span className="text-xs font-black text-slate-500">{String.fromCharCode(65+index)}</span><input value={choice} onChange={(event)=>updateChoice(index,event.target.value)} placeholder={`Pilihan ${String.fromCharCode(65+index)}`} className="h-9 min-w-0 flex-1 bg-transparent text-xs outline-none"/></label>)}</div><label className="mt-4 block"><span className="mb-2 block text-xs font-extrabold">Pembahasan (opsional)</span><textarea value={draft.explanation} onChange={(event)=>setDraft((current)=>({...current,explanation:event.target.value}))} className="min-h-20 w-full rounded-xl border border-slate-200 bg-white p-3 text-sm outline-none focus:border-teal-500" placeholder="Jelaskan alasan jawaban yang benar..."/></label><button type="button" onClick={saveQuestion} className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-slate-950 py-3 text-xs font-extrabold text-white"><Plus size={15}/>{editingIndex===null?'Tambahkan soal':'Simpan perubahan soal'}</button></div>{questions.length>0&&<div><h4 className="mb-3 text-sm font-black">Daftar soal · {questions.length} butir</h4><div className="max-h-56 space-y-2 overflow-y-auto pr-1">{questions.map((question,index)=><div key={`${index}-${question.question}`} className="flex items-start gap-3 rounded-xl border border-slate-200 p-3"><span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-teal-50 text-xs font-black text-teal-700">{index+1}</span><div className="min-w-0 flex-1"><p className="line-clamp-2 text-xs font-bold leading-5">{question.question}</p><p className="mt-1 text-[10px] text-emerald-600">Kunci {String.fromCharCode(65+question.answerIndex)} · {question.choices[question.answerIndex]}</p></div><button onClick={()=>editQuestion(index)} className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"><PencilLine size={14}/></button><button onClick={()=>removeQuestion(index)} className="rounded-lg p-2 text-rose-500 hover:bg-rose-50"><Trash2 size={14}/></button></div>)}</div></div>}<div className="flex gap-3 border-t border-slate-100 pt-4"><button disabled={saving} onClick={onClose} className="flex-1 rounded-xl border border-slate-200 py-3 text-xs font-extrabold text-slate-600">Batal</button><button disabled={saving||!questions.length} onClick={()=>void saveExam()} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-teal-600 py-3 text-xs font-extrabold text-white disabled:opacity-40">{saving?<Loader2 className="animate-spin" size={16}/>:<CheckCircle2 size={16}/>}Simpan sebagai draf</button></div></div></Modal>;
 }
 
+function LiveQuizHostPanel({ snapshotId, onClose, setToast }: { snapshotId: string; onClose: () => void; setToast: (t: Toast) => void }) {
+  const [snapshot, setSnapshot] = useState<any | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [durationSec, setDurationSec] = useState(15);
+  const [updating, setUpdating] = useState(false);
+
+  useEffect(() => {
+    return onSnapshot(doc(db, "publicSnapshots", snapshotId), (snap) => {
+      setLoading(false);
+      if (snap.exists()) setSnapshot({ id: snap.id, ...snap.data() });
+    });
+  }, [snapshotId]);
+
+  const participants: any[] = useMemo(() => {
+    if (!snapshot?.participants) return [];
+    return (Object.values(snapshot.participants) as any[]).sort((a: any, b: any) => (b.totalScore || 0) - (a.totalScore || 0));
+  }, [snapshot?.participants]);
+
+  const currentQ = useMemo(() => {
+    if (!snapshot || snapshot.currentQuestionIndex == null) return null;
+    return snapshot.questions[snapshot.currentQuestionIndex] || null;
+  }, [snapshot]);
+
+  async function updateGameState(updatePayload: Record<string, any>) {
+    setUpdating(true);
+    try {
+      await updateDoc(doc(db, "publicSnapshots", snapshotId), {
+        ...updatePayload,
+        updatedAtMs: Date.now(),
+        updatedAt: serverTimestamp(),
+      });
+    } catch {
+      setToast({ message: "Gagal memperbarui status kuis live.", tone: "error" });
+    } finally {
+      setUpdating(false);
+    }
+  }
+
+  function startGame() {
+    void updateGameState({
+      gameStatus: "question",
+      currentQuestionIndex: 0,
+      questionDurationSec: durationSec,
+      questionStartAtMs: Date.now(),
+    });
+  }
+
+  function revealAnswer() {
+    void updateGameState({ gameStatus: "reveal" });
+  }
+
+  function nextQuestion() {
+    if (!snapshot) return;
+    const nextIdx = snapshot.currentQuestionIndex + 1;
+    if (nextIdx >= snapshot.questions.length) {
+      void updateGameState({ gameStatus: "podium" });
+    } else {
+      void updateGameState({
+        gameStatus: "question",
+        currentQuestionIndex: nextIdx,
+        questionDurationSec: durationSec,
+        questionStartAtMs: Date.now(),
+      });
+    }
+  }
+
+  const answeredCount = useMemo(() => {
+    if (!snapshot || snapshot.currentQuestionIndex == null || !snapshot.participants) return 0;
+    const qIdxStr = String(snapshot.currentQuestionIndex);
+    return Object.values(snapshot.participants).filter((p: any) => p.answers?.[qIdxStr] !== undefined).length;
+  }, [snapshot]);
+
+  const choiceStats = useMemo(() => {
+    if (!snapshot || snapshot.currentQuestionIndex == null || !snapshot.participants) return [0, 0, 0, 0];
+    const qIdxStr = String(snapshot.currentQuestionIndex);
+    const counts = [0, 0, 0, 0];
+    Object.values(snapshot.participants).forEach((p: any) => {
+      const ans = p.answers?.[qIdxStr];
+      if (ans && ans.choiceIndex >= 0 && ans.choiceIndex < 4) counts[ans.choiceIndex] += 1;
+    });
+    return counts;
+  }, [snapshot]);
+
+  if (loading || !snapshot) {
+    return (
+      <Modal title="Kuis Live Interaktif (Kahoot)" subtitle="Memuat ruang kuis..." onClose={onClose}>
+        <div className="py-12 text-center">
+          <Loader2 className="mx-auto animate-spin text-teal-600" size={36} />
+          <p className="mt-3 text-xs font-bold text-slate-500">Menyiapkan Ruang Kuis Live...</p>
+        </div>
+      </Modal>
+    );
+  }
+
+  return (
+    <Modal title={`⚡ Live Kuis — ${snapshot.title}`} subtitle={`Kode Room 4-Digit: #${snapshot.accessCode} · ${participants.length} Peserta`} onClose={onClose}>
+      <div className="space-y-6">
+        {snapshot.gameStatus === "lobby" && (
+          <div className="text-center space-y-5">
+            <div className="rounded-3xl bg-gradient-to-br from-slate-950 via-teal-950 to-slate-950 p-6 text-white shadow-xl">
+              <span className="rounded-full bg-teal-500/20 px-3 py-1 text-[10px] font-black uppercase text-teal-300 border border-teal-500/30">
+                KODE MASUK SISWA (SMART-ATT.WEB.ID/LINK)
+              </span>
+              <h2 className="mt-3 font-mono text-5xl sm:text-6xl font-black tracking-widest text-teal-300">
+                {snapshot.accessCode}
+              </h2>
+              <p className="mt-2 text-xs text-slate-300">
+                Siswa dapat membuka <strong>smart-att.web.id/link</strong>, ketik kode <strong>{snapshot.accessCode}</strong>, dan masukkan nama mereka!
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-slate-50 p-4">
+              <label className="flex items-center gap-2 text-xs font-black">
+                <span>Waktu per soal:</span>
+                <select value={durationSec} onChange={(e) => setDurationSec(Number(e.target.value))} className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-bold outline-none">
+                  <option value={10}>10 Detik (Sangat Cepat)</option>
+                  <option value={15}>15 Detik (Standar)</option>
+                  <option value={20}>20 Detik</option>
+                  <option value={30}>30 Detik</option>
+                </select>
+              </label>
+
+              <span className="rounded-xl bg-teal-100 px-3 py-1.5 text-xs font-black text-teal-800">
+                {participants.length} Peserta Sudah Masuk
+              </span>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <h4 className="mb-3 text-xs font-black text-slate-500 uppercase tracking-wider">Daftar Peserta di Room:</h4>
+              {participants.length ? (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 max-h-48 overflow-y-auto">
+                  {participants.map((p: any) => (
+                    <div key={p.id} className="rounded-xl bg-teal-50 border border-teal-100 px-3 py-2 text-xs font-black text-teal-900 truncate text-center">
+                      ⚡ {p.name}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="py-6 text-xs text-slate-400 font-bold">Belum ada siswa yang masuk. Menunggu peserta bergabung...</p>
+              )}
+            </div>
+
+            <button
+              disabled={updating || !participants.length}
+              onClick={startGame}
+              className="flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-teal-600 to-emerald-600 text-sm font-black text-white shadow-xl shadow-teal-600/20 disabled:opacity-50"
+            >
+              {updating ? <Loader2 className="animate-spin" size={20} /> : <>🚀 Mulai Kuis Live Sekarang ({participants.length} Peserta)</>}
+            </button>
+          </div>
+        )}
+
+        {snapshot.gameStatus === "question" && currentQ && (
+          <div className="space-y-5 text-center">
+            <div className="flex items-center justify-between rounded-2xl bg-slate-950 px-5 py-4 text-white">
+              <div>
+                <p className="text-[10px] font-black uppercase text-teal-400">SOAL {snapshot.currentQuestionIndex + 1} DARI {snapshot.questions.length}</p>
+                <p className="text-xs font-bold text-slate-300">{snapshot.title}</p>
+              </div>
+              <div className="rounded-xl bg-teal-500/20 px-3 py-1.5 text-xs font-black text-teal-300 border border-teal-500/30">
+                {answeredCount} / {participants.length} Menjawab
+              </div>
+            </div>
+
+            <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-md">
+              <p className="text-xs font-black text-teal-600 mb-2">Pertanyaan:</p>
+              <h3 className="text-xl font-black text-slate-900 leading-relaxed">{currentQ.question}</h3>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 text-left">
+              {currentQ.choices.map((c: string, idx: number) => (
+                <div key={idx} className="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs font-bold text-slate-800">
+                  <span className="font-black text-teal-700 mr-2">{String.fromCharCode(65 + idx)}.</span> {c}
+                </div>
+              ))}
+            </div>
+
+            <button
+              disabled={updating}
+              onClick={revealAnswer}
+              className="flex h-13 w-full items-center justify-center gap-2 rounded-2xl bg-slate-950 text-xs font-black text-white"
+            >
+              {updating ? <Loader2 className="animate-spin" size={18} /> : <>📊 Buka Jawaban Benar & Papan Skor</>}
+            </button>
+          </div>
+        )}
+
+        {snapshot.gameStatus === "reveal" && currentQ && (
+          <div className="space-y-5">
+            <div className="rounded-2xl bg-slate-900 p-5 text-white">
+              <p className="text-[10px] font-black uppercase text-teal-400">HASIL SOAL {snapshot.currentQuestionIndex + 1}</p>
+              <h3 className="mt-1 text-sm font-black">{currentQ.question}</h3>
+              <p className="mt-2 text-xs font-bold text-emerald-400">
+                Jawaban Benar: {String.fromCharCode(65 + currentQ.answerIndex)}. {currentQ.choices[currentQ.answerIndex]}
+              </p>
+            </div>
+
+            <div className="grid grid-cols-4 gap-2">
+              {choiceStats.map((count, idx) => (
+                <div
+                  key={idx}
+                  className={`rounded-2xl p-3 text-center border-2 ${
+                    idx === currentQ.answerIndex ? "bg-emerald-50 border-emerald-500 text-emerald-900" : "bg-slate-50 border-slate-200 text-slate-700"
+                  }`}
+                >
+                  <p className="text-xs font-black">{String.fromCharCode(65 + idx)}</p>
+                  <p className="text-xl font-black">{count}</p>
+                  <p className="text-[9px] font-bold">peserta</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <h4 className="mb-3 text-xs font-black text-slate-900 uppercase">Papan Peringkat Sementara:</h4>
+              <div className="space-y-2 max-h-48 overflow-y-auto">
+                {participants.slice(0, 5).map((p: any, idx: number) => (
+                  <div key={p.id} className="flex items-center justify-between rounded-xl bg-slate-50 p-3 text-xs font-black">
+                    <div className="flex items-center gap-3">
+                      <span className={`grid h-7 w-7 place-items-center rounded-lg text-xs ${idx === 0 ? "bg-amber-100 text-amber-800 font-black" : "bg-slate-200 text-slate-700"}`}>
+                        #{idx + 1}
+                      </span>
+                      <span>{p.name}</span>
+                    </div>
+                    <span className="text-teal-700">{p.totalScore} pts</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <button
+              disabled={updating}
+              onClick={nextQuestion}
+              className="flex h-13 w-full items-center justify-center gap-2 rounded-2xl bg-teal-600 text-xs font-black text-white hover:bg-teal-700"
+            >
+              {updating ? <Loader2 className="animate-spin" size={18} /> : (
+                snapshot.currentQuestionIndex + 1 < snapshot.questions.length ? "➡️ Soal Berikutnya" : "🏆 Tampilkan Podium Juara!"
+              )}
+            </button>
+          </div>
+        )}
+
+        {snapshot.gameStatus === "podium" && (
+          <div className="text-center space-y-6">
+            <div className="rounded-3xl bg-gradient-to-b from-slate-950 to-teal-950 p-6 text-white shadow-xl">
+              <Trophy size={48} className="mx-auto text-amber-400 animate-bounce" />
+              <h2 className="mt-2 text-2xl font-black text-white">Podium Juara! 🏆</h2>
+              <p className="text-xs text-slate-300">Selamat kepada para pemenang!</p>
+
+              <div className="mt-6 flex items-end justify-center gap-3">
+                <div className="flex-1">
+                  {participants[1] && (
+                    <>
+                      <p className="truncate text-xs font-black text-slate-200">{participants[1].name}</p>
+                      <p className="text-[10px] text-amber-300">{participants[1].totalScore} pts</p>
+                      <div className="mt-2 h-20 rounded-t-xl bg-slate-600 flex items-center justify-center text-lg font-black">🥈</div>
+                    </>
+                  )}
+                </div>
+                <div className="flex-1">
+                  {participants[0] && (
+                    <>
+                      <p className="truncate text-sm font-black text-amber-300">{participants[0].name}</p>
+                      <p className="text-xs text-amber-400">{participants[0].totalScore} pts</p>
+                      <div className="mt-2 h-28 rounded-t-xl bg-amber-500 flex items-center justify-center text-2xl font-black">👑</div>
+                    </>
+                  )}
+                </div>
+                <div className="flex-1">
+                  {participants[2] && (
+                    <>
+                      <p className="truncate text-xs font-black text-amber-200">{participants[2].name}</p>
+                      <p className="text-[10px] text-amber-300">{participants[2].totalScore} pts</p>
+                      <div className="mt-2 h-16 rounded-t-xl bg-amber-800 flex items-center justify-center text-base font-black">🥉</div>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <button onClick={onClose} className="w-full rounded-2xl bg-slate-950 py-3.5 text-xs font-black text-white">
+              Selesai & Tutup Kuis
+            </button>
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
 function ExamsViewAdvanced({user,demo,students,setToast,scope,allowedClassNames}:{user:User|null;demo:boolean;students:Student[];setToast:(t:Toast)=>void;scope?:WorkspaceScope;allowedClassNames?:string[]}){
   const dataScope:WorkspaceScope|null=scope??(user?{root:"users",id:user.uid}:null);
   const sampleExam:ExamRecord={id:"demo-exam",title:"Kuis Matematika — Persamaan Linear",subject:"Matematika",className:"V-A",chapter:"Persamaan linear",status:"draft",source:"ai",durationMinutes:60,questions:[{question:"Nilai x yang memenuhi 3x + 5 = 20 adalah...",choices:["3","5","7","15"],answerIndex:1,explanation:"3x = 15, sehingga x = 5."}]};
@@ -2353,7 +2642,38 @@ function ExamsViewAdvanced({user,demo,students,setToast,scope,allowedClassNames}
   const [loading,setLoading]=useState(!demo);
   const [review,setReview]=useState<ExamRecord|null>(null);
   const [monitor,setMonitor]=useState<ExamRecord|null>(null);
-const [durationMinutes,setDurationMinutes]=useState("60");
+  const [liveHostSnapshotId,setLiveHostSnapshotId]=useState<string|null>(null);
+  const [durationMinutes,setDurationMinutes]=useState("60");
+
+  async function publishLiveQuiz(exam:ExamRecord){
+    if(!exam.questions?.length){setToast({message:"Ulangan belum memiliki soal.",tone:"error"});return;}
+    setBusyId(exam.id);
+    try{
+      const snapshotRef=exam.snapshotId?doc(db,"publicSnapshots",exam.snapshotId):doc(collection(db,"publicSnapshots"));
+      let preferred=await existingQuizAccessCode(exam);
+      let accessCode="";
+      for(let attempt=0;attempt<8;attempt+=1){
+        const candidate=preferred||generateQuizAccessCode();
+        const codeRef=doc(db,"publicLinkCodes",candidate);
+        try{
+          if(demo||!user||!dataScope){accessCode=candidate;break;}
+          await runTransaction(db,async(transaction)=>{
+            const codeDoc=await transaction.get(codeRef);
+            if(codeDoc.exists()&&codeDoc.data().snapshotId!==snapshotRef.id)throw new Error("quiz-access-code-collision");
+            const publicQuestions=(exam.questions??[]).map(({answerIndex,...q})=>({...q,answerIndex}));
+            transaction.update(workspaceDoc(dataScope,"exams",exam.id),{status:"published",snapshotId:snapshotRef.id,accessCode:candidate,updatedAt:serverTimestamp()});
+            transaction.set(snapshotRef,{type:"live_quiz",ownerUid:user.uid,...(dataScope.root==="schools"?{schoolId:dataScope.id}:{}),examId:exam.id,accessCode:candidate,published:true,title:exam.title,subject:exam.subject,className:exam.className,questions:publicQuestions,gameStatus:"lobby",currentQuestionIndex:0,questionDurationSec:15,participants:{},updatedAtMs:Date.now(),updatedAt:serverTimestamp()},{merge:true});
+            transaction.set(codeRef,{code:candidate,type:"quiz",snapshotId:snapshotRef.id,ownerUid:user.uid,...(dataScope.root==="schools"?{schoolId:dataScope.id}:{}),published:true,updatedAt:serverTimestamp()},{merge:true});
+          });
+          accessCode=candidate;break;
+        }catch(reason){if(reason instanceof Error&&reason.message==="quiz-access-code-collision"){preferred="";continue;}throw reason;}
+      }
+      if(!accessCode)throw new Error("quiz-access-code-exhausted");
+      setLiveHostSnapshotId(snapshotRef.id);
+      setToast({message:`Kuis Live Siap! Kode 4-Digit: ${accessCode}`,tone:"success"});
+    }catch{setToast({message:"Gagal memulai Kuis Live.",tone:"error"});}
+    finally{setBusyId("");}
+  }
   const [scheduleDate,setScheduleDate]=useState(()=>{const date=new Date(Date.now()+300000);return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`});
   const [scheduleTime,setScheduleTime]=useState(()=>new Date(Date.now()+300000).toTimeString().slice(0,5));
   const [busyId,setBusyId]=useState("");
@@ -2571,10 +2891,11 @@ const [durationMinutes,setDurationMinutes]=useState("60");
       return <article key={exam.id} className="flex flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm lg:flex-row lg:items-center">
         <div className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-teal-50 text-teal-700"><ClipboardCheck size={25}/></div>
         <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><h3 className="font-black">{exam.title}</h3><span className={`rounded-full px-2 py-1 text-[9px] font-black ${completed?'bg-slate-100 text-slate-700':exam.status==="scheduled"?'bg-violet-50 text-violet-700':online?'bg-emerald-50 text-emerald-700':'bg-sky-50 text-sky-700'}`}>{completed?'SELESAI':exam.status==="scheduled"?'TERJADWAL':online?'ONLINE':'DRAF'}</span>{exam.source==="ai"&&<span className="rounded-full bg-violet-50 px-2 py-1 text-[9px] font-black text-violet-700">DARI AI</span>}</div><div className="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-400"><span>{exam.className}</span><span>{exam.questions?.length??0} soal</span><span>{exam.durationMinutes??60} menit</span>{exam.accessCode&&<span className="font-black tracking-wider text-teal-700">Kode {exam.accessCode}</span>}{exam.startAtMs&&<span>Mulai {new Date(exam.startAtMs).toLocaleString("id-ID",{dateStyle:"medium",timeStyle:"short"})}</span>}{(online||completed)&&<><span>{finished.length}/{exam.targetStudentCount??targetStudents(exam).length} selesai</span><span className={violations?'font-bold text-rose-500':''}>{violations} pelanggaran</span></>}</div></div>
-        <div className="flex flex-wrap gap-2">{online?<><button onClick={()=>void copyQuizLink(exam)} className="flex items-center gap-2 rounded-xl bg-teal-600 px-3 py-2.5 text-xs font-bold text-white"><Link2 size={14}/>Link pendek</button><button onClick={()=>void copyQuizCode(exam)} className="flex items-center gap-2 rounded-xl border border-teal-200 bg-teal-50 px-3 py-2.5 text-xs font-bold text-teal-800"><KeyRound size={14}/>{exam.accessCode||"Buat kode"}</button><button onClick={()=>setMonitor(exam)} className="flex items-center gap-2 rounded-xl bg-slate-950 px-3 py-2.5 text-xs font-bold text-white"><Activity size={14}/>Monitor</button>{canFinishNow&&<button disabled={busyId===exam.id} onClick={()=>void finishExamNow(exam)} className="flex items-center gap-2 rounded-xl bg-rose-700 px-3 py-2.5 text-xs font-bold text-white disabled:opacity-50">{busyId===exam.id?<Loader2 className="animate-spin" size={14}/>:<XCircle size={14}/>}Matikan ulangan</button>}<button disabled={busyId===exam.id} onClick={()=>void unpublishExam(exam)} title="Nonaktifkan link tanpa membuka hasil" className="rounded-xl border border-slate-200 p-2.5 text-slate-500"><XCircle size={15}/></button></>:completed?<><button onClick={()=>void copyQuizLink(exam)} className="flex items-center gap-2 rounded-xl bg-teal-600 px-3 py-2.5 text-xs font-bold text-white"><Link2 size={14}/>Link pendek</button><button onClick={()=>void copyQuizCode(exam)} className="flex items-center gap-2 rounded-xl border border-teal-200 bg-teal-50 px-3 py-2.5 text-xs font-bold text-teal-800"><KeyRound size={14}/>{exam.accessCode||"Buat kode"}</button><button onClick={()=>setMonitor(exam)} className="flex items-center gap-2 rounded-xl bg-slate-950 px-3 py-2.5 text-xs font-bold text-white"><Activity size={14}/>Lihat hasil</button></>:<button onClick={()=>{setReview(exam);setDurationMinutes(String(exam.durationMinutes??60));if(exam.startAtMs){const date=new Date(exam.startAtMs);setScheduleDate(`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`);setScheduleTime(date.toTimeString().slice(0,5))}}} className="flex items-center gap-2 rounded-xl bg-slate-950 px-3 py-2.5 text-xs font-bold text-white"><FileText size={14}/>Tinjau & terapkan</button>}<button onClick={()=>printExamPdf(exam)} title="Simpan PDF" className="rounded-xl border border-slate-200 p-2.5 text-slate-500"><Download size={15}/></button><button onClick={()=>void removeExam(exam)} title="Hapus" className="rounded-xl border border-rose-100 p-2.5 text-rose-500"><Trash2 size={15}/></button></div>
+        <div className="flex flex-wrap gap-2">{online?<><button onClick={()=>void copyQuizLink(exam)} className="flex items-center gap-2 rounded-xl bg-teal-600 px-3 py-2.5 text-xs font-bold text-white"><Link2 size={14}/>Link pendek</button><button onClick={()=>void copyQuizCode(exam)} className="flex items-center gap-2 rounded-xl border border-teal-200 bg-teal-50 px-3 py-2.5 text-xs font-bold text-teal-800"><KeyRound size={14}/>{exam.accessCode||"Buat kode"}</button><button disabled={busyId===exam.id} onClick={()=>void publishLiveQuiz(exam)} className="flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2.5 text-xs font-bold text-amber-900"><Zap size={14}/>Kuis Live</button><button onClick={()=>setMonitor(exam)} className="flex items-center gap-2 rounded-xl bg-slate-950 px-3 py-2.5 text-xs font-bold text-white"><Activity size={14}/>Monitor</button>{canFinishNow&&<button disabled={busyId===exam.id} onClick={()=>void finishExamNow(exam)} className="flex items-center gap-2 rounded-xl bg-rose-700 px-3 py-2.5 text-xs font-bold text-white disabled:opacity-50">{busyId===exam.id?<Loader2 className="animate-spin" size={14}/>:<XCircle size={14}/>}Matikan ulangan</button>}<button disabled={busyId===exam.id} onClick={()=>void unpublishExam(exam)} title="Nonaktifkan link tanpa membuka hasil" className="rounded-xl border border-slate-200 p-2.5 text-slate-500"><XCircle size={15}/></button></>:completed?<><button onClick={()=>void copyQuizLink(exam)} className="flex items-center gap-2 rounded-xl bg-teal-600 px-3 py-2.5 text-xs font-bold text-white"><Link2 size={14}/>Link pendek</button><button onClick={()=>void copyQuizCode(exam)} className="flex items-center gap-2 rounded-xl border border-teal-200 bg-teal-50 px-3 py-2.5 text-xs font-bold text-teal-800"><KeyRound size={14}/>{exam.accessCode||"Buat kode"}</button><button disabled={busyId===exam.id} onClick={()=>void publishLiveQuiz(exam)} className="flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2.5 text-xs font-bold text-amber-900"><Zap size={14}/>Main Kuis Live Lagi</button><button onClick={()=>setMonitor(exam)} className="flex items-center gap-2 rounded-xl bg-slate-950 px-3 py-2.5 text-xs font-bold text-white"><Activity size={14}/>Lihat hasil</button></>:<><button onClick={()=>{setReview(exam);setDurationMinutes(String(exam.durationMinutes??60));if(exam.startAtMs){const date=new Date(exam.startAtMs);setScheduleDate(`${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,"0")}-${String(date.getDate()).padStart(2,"0")}`);setScheduleTime(date.toTimeString().slice(0,5))}}} className="flex items-center gap-2 rounded-xl bg-slate-950 px-3 py-2.5 text-xs font-bold text-white"><FileText size={14}/>Tinjau & terapkan</button><button disabled={busyId===exam.id} onClick={()=>void publishLiveQuiz(exam)} className="flex items-center gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2.5 text-xs font-bold text-amber-900"><Zap size={14}/>Main Kuis Live (Kahoot)</button></>}<button onClick={()=>printExamPdf(exam)} title="Simpan PDF" className="rounded-xl border border-slate-200 p-2.5 text-slate-500"><Download size={15}/></button><button onClick={()=>void removeExam(exam)} title="Hapus" className="rounded-xl border border-rose-100 p-2.5 text-rose-500"><Trash2 size={15}/></button></div>
       </article>})}</div>}
-    {review&&<Modal title="Tinjau & terapkan ulangan" subtitle={`${review.title} · ${review.questions.length} soal`} onClose={()=>setReview(null)}><div className="mb-5 grid gap-3 sm:grid-cols-2"><Field label="Tanggal ujian" type="date" value={scheduleDate} onChange={setScheduleDate}/><Field label="Jam mulai" type="time" value={scheduleTime} onChange={setScheduleTime}/><Field label="Durasi ujian (menit)" type="number" value={durationMinutes} onChange={setDurationMinutes}/><div className="rounded-xl bg-teal-50 p-4"><p className="text-[10px] font-black text-teal-600">AKSES UJIAN</p><p className="mt-1 text-sm font-black text-teal-950">Semua NIS terdaftar · melalui link</p></div></div><div className="max-h-[48vh] space-y-3 overflow-y-auto pr-1">{review.questions.map((question,index)=><article key={`${index}-${question.question}`} className="rounded-xl border border-slate-200 p-4"><h4 className="text-sm font-black">{index+1}. {question.question}</h4><div className="mt-2 grid gap-1.5 sm:grid-cols-2">{question.choices.map((choice,choiceIndex)=><p key={choiceIndex} className={`rounded-lg px-2.5 py-2 text-xs ${choiceIndex===question.answerIndex?'bg-emerald-50 font-bold text-emerald-800':'bg-slate-50 text-slate-600'}`}>{String.fromCharCode(65+choiceIndex)}. {choice}</p>)}</div></article>)}</div><div className="mt-5 flex flex-col gap-2 sm:flex-row"><button onClick={()=>printExamPdf(review)} className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-slate-200 py-3 text-xs font-extrabold"><Download size={15}/>Simpan PDF</button><button disabled={busyId===review.id} onClick={()=>void publishExam(review)} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-teal-600 py-3 text-xs font-extrabold text-white disabled:opacity-60">{busyId===review.id?<Loader2 className="animate-spin" size={16}/>:<Send size={16}/>}Jadwalkan / terapkan</button></div></Modal>}
+    {review&&<Modal title="Tinjau & terapkan ulangan" subtitle={`${review.title} · ${review.questions.length} soal`} onClose={()=>setReview(null)}><div className="mb-5 grid gap-3 sm:grid-cols-2"><Field label="Tanggal ujian" type="date" value={scheduleDate} onChange={setScheduleDate}/><Field label="Jam mulai" type="time" value={scheduleTime} onChange={setScheduleTime}/><Field label="Durasi ujian (menit)" type="number" value={durationMinutes} onChange={setDurationMinutes}/><div className="rounded-xl bg-teal-50 p-4"><p className="text-[10px] font-black text-teal-600">AKSES UJIAN</p><p className="mt-1 text-sm font-black text-teal-950">Semua NIS terdaftar · melalui link</p></div></div><div className="max-h-[48vh] space-y-3 overflow-y-auto pr-1">{review.questions.map((question,index)=><article key={`${index}-${question.question}`} className="rounded-xl border border-slate-200 p-4"><h4 className="text-sm font-black">{index+1}. {question.question}</h4><div className="mt-2 grid gap-1.5 sm:grid-cols-2">{question.choices.map((choice,choiceIndex)=><p key={choiceIndex} className={`rounded-lg px-2.5 py-2 text-xs ${choiceIndex===question.answerIndex?'bg-emerald-50 font-bold text-emerald-800':'bg-slate-50 text-slate-600'}`}>{String.fromCharCode(65+choiceIndex)}. {choice}</p>)}</div></article>)}</div><div className="mt-5 flex flex-col gap-2 sm:flex-row"><button onClick={()=>printExamPdf(review)} className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-slate-200 py-3 text-xs font-extrabold"><Download size={15}/>Simpan PDF</button><button disabled={busyId===review.id} onClick={()=>{setReview(null);void publishLiveQuiz(review);}} className="flex flex-1 items-center justify-center gap-2 rounded-xl border border-amber-300 bg-amber-500 py-3 text-xs font-black text-slate-950 shadow-md"><Zap size={16}/>⚡ Main Kuis Live (Kahoot)</button><button disabled={busyId===review.id} onClick={()=>void publishExam(review)} className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-teal-600 py-3 text-xs font-extrabold text-white disabled:opacity-60">{busyId===review.id?<Loader2 className="animate-spin" size={16}/>:<Send size={16}/>}Jadwalkan Ulangan Formal</button></div></Modal>}
     {monitor&&(()=>{const related=examAttempts(monitor);const finished=related.filter((item)=>item.status==="finished");const top=[...finished].sort((a,b)=>(b.score??0)-(a.score??0)||(a.durationSeconds??Infinity)-(b.durationSeconds??Infinity)).slice(0,5);const target=monitor.targetStudentCount??targetStudents(monitor).length;const allDone=target>0&&finished.length>=target;return <Modal title="Monitoring & peringkat" subtitle={`${monitor.title} · ${finished.length}/${target} siswa selesai`} onClose={()=>setMonitor(null)}>{allDone&&<div className="mb-4 rounded-2xl bg-emerald-50 p-4 text-sm font-bold text-emerald-800"><CheckCircle2 className="mr-2 inline" size={18}/>Semua siswa telah menyelesaikan ujian.</div>}<h4 className="mb-3 text-sm font-black">5 nilai tertinggi dan tercepat</h4>{top.length?<div className="space-y-2">{top.map((attempt,index)=><div key={attempt.id} className="flex items-center gap-3 rounded-xl border border-slate-200 p-3"><span className={`grid h-9 w-9 place-items-center rounded-xl text-sm font-black ${index===0?'bg-amber-100 text-amber-700':'bg-slate-100 text-slate-600'}`}>{index+1}</span><div className="min-w-0 flex-1"><p className="truncate text-sm font-black">{attempt.studentName}</p><p className="text-[10px] text-slate-400">NIS {attempt.nis} · {formatCountdown(attempt.durationSeconds??0)}</p></div><p className="text-xl font-black text-teal-700">{attempt.score??0}</p></div>)}</div>:<p className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500">Belum ada siswa yang menyelesaikan ujian.</p>}<h4 className="mb-3 mt-6 text-sm font-black">Aktivitas pengawasan</h4><div className="space-y-2">{related.map((attempt)=><div key={attempt.id} className="flex items-center justify-between rounded-xl bg-slate-50 p-3"><div><p className="text-sm font-bold">{attempt.studentName}</p><p className="text-[10px] text-slate-400">{attempt.status==="finished"?'Selesai':'Mengerjakan'} · Login ulang {attempt.reloginCount??0}x</p></div><div className="flex flex-col items-end gap-1.5"><span className={`rounded-lg px-2.5 py-1.5 text-xs font-black ${(attempt.violations?.length??0)>0?'bg-rose-100 text-rose-700':'bg-emerald-100 text-emerald-700'}`}>{attempt.violations?.length??0} pelanggaran</span>{attempt.status==="active"&&<button onClick={()=>void unlockExamDevice(attempt)} className="rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[10px] font-black text-amber-700"><KeyRound className="mr-1 inline" size={12}/>Buka kunci perangkat</button>}</div></div>)}</div></Modal>})()}
+    {liveHostSnapshotId&&<LiveQuizHostPanel snapshotId={liveHostSnapshotId} onClose={()=>setLiveHostSnapshotId(null)} setToast={setToast}/>}
   </>;
 }
 

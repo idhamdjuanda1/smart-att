@@ -471,18 +471,19 @@ service cloud.firestore {
       allow read: if resource.data.published == true;
       allow create: if signedIn() &&
         request.resource.data.ownerUid == request.auth.uid &&
-        request.resource.data.type in ['guardian', 'quiz', 'task', 'absence'] &&
+        request.resource.data.type in ['guardian', 'quiz', 'task', 'absence', 'live_quiz'] &&
         (!request.resource.data.keys().hasAny(['schoolId']) ||
-         (request.resource.data.type == 'quiz' &&
+         ((request.resource.data.type == 'quiz' || request.resource.data.type == 'live_quiz') &&
           canCreateSchoolQuiz(request.resource.data.schoolId, request.resource.data.className)) ||
          (request.resource.data.type == 'absence' && isSchoolAdmin(request.resource.data.schoolId)));
-      allow update: if signedIn() &&
-        (resource.data.ownerUid == request.auth.uid ||
-         (resource.data.keys().hasAny(['schoolId']) && isSchoolPrincipal(resource.data.schoolId))) &&
-        request.resource.data.ownerUid == resource.data.ownerUid;
+      allow update: if (resource.data.type == 'live_quiz' && resource.data.published == true) ||
+        (signedIn() &&
+         (resource.data.ownerUid == request.auth.uid ||
+          (resource.data.keys().hasAny(['schoolId']) && isSchoolPrincipal(resource.data.schoolId))) &&
+         request.resource.data.ownerUid == resource.data.ownerUid);
       allow delete: if signedIn() &&
         (resource.data.ownerUid == request.auth.uid ||
-         (resource.data.keys().hasAny(['schoolId']) && isSchoolPrincipal(resource.data.schoolId)));
+          (resource.data.keys().hasAny(['schoolId']) && isSchoolPrincipal(resource.data.schoolId)));
     }
 
     match /publicLinkCodes/{linkCode} {

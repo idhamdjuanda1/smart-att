@@ -13,14 +13,15 @@ import {
 import { db } from "../lib/firebase";
 import type { QuizQuestion } from "../lib/quiz";
 import { createRandomizedQuiz, formatCountdown, type RandomizedQuestion } from "../lib/quizRuntime";
+import { LiveQuizPlayer } from "./LiveQuizPlayer";
 
 type StudentIdentity = { id: string; nis: string; name: string; className: string };
 type PublicQuizSnapshot = {
+  type?: string;
   ownerUid: string;
   schoolId?: string;
   examId: string;
   published: boolean;
-  type: "quiz";
   title: string;
   subject: string;
   className: string;
@@ -145,7 +146,7 @@ export function PublicQuizProfessional() {
     }
     return onSnapshot(doc(db, "publicSnapshots", snapshotId), (resultSnapshot) => {
       const data = resultSnapshot.data();
-      if (!resultSnapshot.exists() || data?.type !== "quiz" || data.published !== true) { setSnapshot(null); setError("Ujian tidak ditemukan atau sudah dinonaktifkan."); }
+      if (!resultSnapshot.exists() || (data?.type !== "quiz" && data?.type !== "live_quiz") || data.published !== true) { setSnapshot(null); setError("Ujian tidak ditemukan atau sudah dinonaktifkan."); }
       else setSnapshot(data as PublicQuizSnapshot);
       setLoading(false);
     }, () => { setError("Ujian tidak dapat dibuka."); setLoading(false); });
@@ -357,6 +358,7 @@ export function PublicQuizProfessional() {
   const reviewRows = useMemo(() => quiz.map((question, index) => ({ question, selected: answers[String(index)] })), [quiz, answers]);
 
   if (loading) return <PublicFrame><div className="grid min-h-64 place-items-center"><Loader2 className="animate-spin text-teal-600" size={34}/></div></PublicFrame>;
+  if (snapshot?.type === "live_quiz") return <LiveQuizPlayer snapshotId={snapshotId} />;
   if (!snapshot) return <PublicFrame><div className="mx-auto max-w-lg rounded-3xl border border-rose-100 bg-white p-8 text-center shadow-xl"><XCircle className="mx-auto text-rose-600" size={40}/><h1 className="mt-4 text-2xl font-black">Ujian tidak tersedia</h1><p className="mt-2 text-sm text-slate-500">{error || "Minta link terbaru kepada guru."}</p></div></PublicFrame>;
   if (beforeStart) return <PublicFrame><section className="mx-auto max-w-2xl rounded-3xl border border-slate-200 bg-white p-6 text-center shadow-xl sm:p-10"><span className="rounded-full bg-violet-50 px-3 py-1.5 text-[10px] font-black text-violet-700">UJIAN TERJADWAL</span><h1 className="mt-5 text-3xl font-black">{snapshot.title}</h1><p className="mt-2 text-sm text-slate-500">{snapshot.subject} · {snapshot.className}</p><div className="mt-8 rounded-3xl bg-slate-950 p-6 text-white"><p className="text-xs font-bold text-slate-400">Ujian dimulai dalam</p><div className="mt-5 grid grid-cols-4 gap-2">{[[countdown.days, "Hari"], [countdown.hours, "Jam"], [countdown.minutes, "Menit"], [countdown.seconds, "Detik"]].map(([value, label]) => <div key={String(label)} className="rounded-2xl bg-white/10 p-3"><p className="text-2xl font-black text-teal-300">{String(value).padStart(2, "0")}</p><p className="mt-1 text-[9px] uppercase text-slate-400">{label}</p></div>)}</div></div><p className="mt-6 text-xs leading-5 text-slate-400">Soal akan terbuka otomatis pada {new Date(snapshot.startAtMs).toLocaleString("id-ID", { dateStyle: "full", timeStyle: "short" })}.</p></section></PublicFrame>;
   if (phase === "waiting") return <PublicFrame><section className="mx-auto max-w-xl rounded-3xl border border-slate-200 bg-white p-7 text-center shadow-xl sm:p-10"><div className="mx-auto grid h-20 w-20 place-items-center rounded-3xl bg-emerald-100 text-emerald-600"><CheckCircle2 size={40}/></div><h1 className="mt-6 text-3xl font-black">Ujian telah selesai</h1><p className="mt-3 text-sm leading-6 text-slate-500">Silakan menunggu hingga seluruh peserta menyelesaikan ujian.<br/>Hasil akan diumumkan setelah waktu ujian berakhir.</p><div className="mt-7 rounded-2xl bg-slate-950 p-5 text-white"><p className="text-[10px] font-black uppercase text-slate-400">Hasil dibuka dalam</p><p className="mt-2 text-3xl font-black text-teal-300">{formatCountdown(Math.ceil((snapshot.endAtMs - clock) / 1000))}</p></div></section></PublicFrame>;
