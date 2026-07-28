@@ -68,9 +68,63 @@ Platform **SMART-ATT** bukan sekadar aplikasi absensi siswa, melainkan solusi ma
 Buka **smart-att.web.id** hari ini dan rasakan kemudahan mengelola sekolah modern serta menghidupkan suasana kelas dengan Kuis Live Interaktif SMART-ATT!`
 };
 
-export const DEFAULT_ARTICLE: ArticleRecord = KAHOOT_SEO_ARTICLE;
+export const QR_ABSENSI_SEO_ARTICLE: ArticleRecord = {
+  id: "absensi-qr-kartu-pelajar-smart-att", slug: "absensi-qr-kartu-pelajar-smart-att",
+  title: "Revolusi Absensi Sekolah Digital SMART-ATT: Scan QR Kartu Pelajar, Rekap Otomatis & Verifikasi WhatsApp Instant",
+  excerpt: "Tinggalkan cara manual yang menyita waktu. SMART-ATT menghadirkan sistem absensi QR Code kartu pelajar tercepat, rekap kehadiran harian/mingguan/bulanan otomatis, serta fitur verifikasi izin/sakit langsung ke WhatsApp wali murid dalam 1-klik!",
+  tags: ["Absensi QR Code", "SMART-ATT", "Kartu Pelajar", "Absen Sekolah", "Konfirmasi WhatsApp", "Sekolah Digital"],
+  coverUrl: "/images/qr_absensi_banner.jpg", published: true,
+  publishedAtMs: new Date("2026-07-28T08:50:00+07:00").getTime(),
+  body: `Efisiensi waktu dan transparansi informasi kehadiran siswa merupakan fondasi utama tata kelola sekolah digital modern. Memahami beban administrasi guru yang tinggi, platform **SMART-ATT (smart-att.web.id)** menghadirkan solusi **Absensi QR Code Kartu Pelajar Terpadu** yang dirancang khusus untuk sekolah SD, SMP, SMA/SMK di seluruh Indonesia.
+
+Dengan sistem ini, proses absensi harian yang biasanya memakan waktu puluhan menit kini diselesaikan hanya dalam beberapa hitungan detik.
+
+---
+
+### 1. Kecepatan Absensi: Cukup Tap / Scan Kartu Pelajar
+
+Tidak ada lagi pemanggilan nama siswa satu per satu di awal jam pelajaran. Di **SMART-ATT**, setiap siswa memiliki **Kartu Pelajar Digital / Cetak dengan QR Code Unik**.
+
+* **Scan Kilat Sub-Detik**: Siswa cukup menunjukkan QR Code di depan kamera HP/tablet atau pemindai barcode meja. Sistem langsung mencatat waktu hadir secara presisi.
+* **Respon Suara Otomatis**: Petugas dan siswa mendengar respon suara (*audio feedback*) instan ("Hadir Tepat Waktu" atau "Terlambat") sehingga proses masuk gerbang atau kelas berjalan tertib tanpa antrean panjang.
+* **Dukungan Multi-Device & Kamera iPhone/Android**: Scanner SMART-ATT berjalan mulus di laptop, HP Android, hingga browser Safari iOS tanpa perlu instalasi aplikasi tambahan yang rumit.
+
+---
+
+### 2. Rekap Otomatis: Harian, Mingguan, dan Bulanan
+
+Salah satu keunggulan terbesar **SMART-ATT** adalah pengolahan data kehadiran secara *real-time*. Begitu QR Code terscan, data langsung terakumulasi ke dalam dashboard sekolah.
+
+* **Rekap Harian**: Menampilkan grafik kehadiran hari ini secara visual. Guru piket, wali kelas, dan Kepala Sekolah dapat melihat secara detil siswa yang Hadir, Terlambat, Izin, Sakit, atau Alpa.
+* **Rekap Mingguan & Bulanan**: Sistem menghitung persentase kehadiran per siswa, per kelas, hingga tingkat sekolah tanpa perlu rekap manual menggunakan tabel kertas.
+* **Cetak Laporan & Export Data**: Rekapitulasi dapat diunduh kapan saja dalam format PDF resmi atau file Excel untuk kebutuhan laporan bulanan Dinas Pendidikan maupun rapat evaluasi sekolah.
+
+---
+
+### 3. Verifikasi Izin & Sakit Langsung via WhatsApp Wali Murid (1-Klik)
+
+Bagaimana jika ada siswa yang belum hadir atau tidak masuk tanpa keterangan? Di sinilah fitur unggulan **Verifikasi WhatsApp SMART-ATT** bekerja!
+
+1. **Tombol WhatsApp Instan di Dashboard**: Di samping nama siswa yang belum tercatat hadir (Alpa), sistem menyediakan tombol **Konfirmasi WhatsApp**.
+2. **Pesan Otomatis & Terformat**: Saat tombol diklik, sistem langsung membuka aplikasi WhatsApp dengan draf pesan sopan dan profesional yang ditujukan kepada nomor HP wali murid.
+3. **Tautan Konfirmasi Mandiri**: Pesan tersebut dilengkapi tautan konfirmasi khusus. Wali murid cukup mengklik tautan tersebut untuk mengunggah surat izin/sakit atau konfirmasi kehadiran langsung dari HP mereka tanpa harus datang ke sekolah.
+4. **Verifikasi Guru 1-Klik**: Wali kelas atau admin sekolah dapat menyetujui izin/sakit tersebut secara langsung di dashboard, sehingga status absensi siswa otomatis berubah secara sah.
+
+---
+
+### Mengapa Sekolah Harus Beralih ke SMART-ATT?
+
+* **Menghemat Waktu Belajar**: Guru dapat langsung fokus pada materi pembelajaran tanpa membuang 15–20 menit untuk absensi manual.
+* **Menjalin Kemitraan dengan Wali Murid**: Orang tua merasa tenang karena sekolah bersikap proaktif memberikan perhatian cepat jika anak tidak hadir.
+* **Terintegrasi Terpadu**: Satu akun **smart-att.web.id** sudah mencakup Absensi QR, Kuis Live Interaktif, Modul Tabungan Siswa, Penilaian Digital, dan Generator Jadwal Pelajaran.
+
+Tingkatkan kedisiplinan dan modernisasi sekolah Anda hari ini bersama **SMART-ATT** di [smart-att.web.id](https://smart-att.web.id)!`
+};
+
+export const DEFAULT_ARTICLE: ArticleRecord = QR_ABSENSI_SEO_ARTICLE;
 
 export const DEFAULT_ARTICLES: ArticleRecord[] = [
+  QR_ABSENSI_SEO_ARTICLE,
   KAHOOT_SEO_ARTICLE,
   {
     id: "kebiasaan-hadir-tepat-waktu", slug: "kebiasaan-hadir-tepat-waktu",

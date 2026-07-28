@@ -29,6 +29,13 @@ async function getPublishedArticle(slug: string) {
       }
     }
   } catch {}
+  if (slug === "absensi-qr-kartu-pelajar-smart-att") {
+    return {
+      title: "Revolusi Absensi Sekolah Digital SMART-ATT: Scan QR Kartu Pelajar, Rekap Otomatis & Verifikasi WhatsApp Instant",
+      excerpt: "Tinggalkan cara manual yang menyita waktu. SMART-ATT menghadirkan sistem absensi QR Code kartu pelajar tercepat, rekap kehadiran harian/mingguan/bulanan otomatis, serta verifikasi WhatsApp wali murid.",
+      coverKey: "",
+    };
+  }
   if (slug === "kuis-interaktif-kahoot-smart-att") {
     return {
       title: "Kuis Interaktif Ala Kahoot di SMART-ATT: Solusi Ulangan Harian Seru & Bebas Ribet untuk Sekolah",
